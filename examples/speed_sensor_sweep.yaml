@@ -1,0 +1,12 @@
+name: Speed and camera-rate comparison
+base_scenario: initial.yaml
+
+# Add more seeds when using the result for a conclusion. Two keep this example
+# quick enough for exploration.
+seeds: [20260823, 20260824]
+
+# Every dotted path names a field in the base scenario. The runner evaluates
+# the Cartesian product of these values for every seed.
+parameters:
+  motion_speed_factor: [0.5, 1.0, 2.0]
+  camera.rate_hz: [5.0, 10.0]

@@ -1,0 +1,117 @@
+format_version: 1
+run_id: initial-sensor-fusion-seed-20260823
+duration_s: 16.0
+motion_speed_factor: 1.0
+local_epoch: synthetic-enu
+root_seed: 20260823
+platform_profile: planar_sensor_fusion
+
+platform:
+  body_frame: body
+  world_frame: world_enu
+
+world:
+  landmarks:
+    - { id: lm-northwest, x_m: -2.0, y_m: 5.0, z_m: 1.2 }
+    - { id: lm-west, x_m: 0.0, y_m: -4.0, z_m: 1.8 }
+    - { id: lm-center, x_m: 4.0, y_m: 3.0, z_m: 1.5 }
+    - { id: lm-south, x_m: 8.0, y_m: -2.0, z_m: 0.8 }
+    - { id: lm-east, x_m: 12.0, y_m: 1.0, z_m: 1.4 }
+    - { id: lm-northeast, x_m: 10.0, y_m: 6.0, z_m: 2.0 }
+    - { id: lm-north, x_m: 5.0, y_m: 10.0, z_m: 1.0 }
+    - { id: lm-far-east, x_m: 16.0, y_m: 6.0, z_m: 1.7 }
+
+trajectory:
+  - id: initial-rest
+    duration_s: 1.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: 0.0
+  - id: accelerate
+    duration_s: 2.0
+    longitudinal_acceleration_mps2: 0.5
+    yaw_rate_radps: 0.0
+  - id: straight
+    duration_s: 2.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: 0.0
+  - id: left-turn
+    duration_s: 2.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: 0.5
+  - id: post-turn
+    duration_s: 1.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: 0.0
+  - id: decelerate
+    duration_s: 2.0
+    longitudinal_acceleration_mps2: -0.5
+    yaw_rate_radps: 0.0
+  - id: stopped
+    duration_s: 1.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: 0.0
+  - id: restart
+    duration_s: 1.0
+    longitudinal_acceleration_mps2: 0.5
+    yaw_rate_radps: 0.0
+  - id: right-turn
+    duration_s: 2.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: -0.5
+  - id: final-deceleration
+    duration_s: 1.0
+    longitudinal_acceleration_mps2: -0.5
+    yaw_rate_radps: 0.0
+  - id: final-rest
+    duration_s: 1.0
+    longitudinal_acceleration_mps2: 0.0
+    yaw_rate_radps: 0.0
+
+imu:
+  instance_id: imu.primary
+  frame: body
+  rate_hz: 100.0
+  clock_offset_ns: 0
+  latency_ns: 1000000
+  gyro_white_noise_density_radps_sqrt_hz: 0.0008
+  accel_white_noise_density_mps2_sqrt_hz: 0.012
+  gyro_turn_on_bias_radps: { x: 0.0, y: 0.0, z: 0.003 }
+  accel_turn_on_bias_mps2: { x: 0.025, y: 0.0, z: 0.0 }
+  gyro_bias_random_walk_radps_sqrt_s: 0.00002
+  accel_bias_random_walk_mps2_sqrt_s: 0.0005
+  gyro_saturation_radps: 8.0
+  accel_saturation_mps2: 80.0
+  quantization_step: 0.000001
+
+camera:
+  instance_id: camera.primary
+  frame: body
+  rate_hz: 10.0
+  latency_ns: 18000000
+  horizontal_fov_rad: 2.4
+  max_range_m: 20.0
+  bearing_noise_stddev_rad: 0.006
+  detection_probability: 0.94
+
+lidar:
+  instance_id: lidar.primary
+  frame: body
+  rate_hz: 5.0
+  latency_ns: 32000000
+  horizontal_fov_rad: 6.283185307179586
+  max_range_m: 24.0
+  scan_duration_ns: 80000000
+  range_noise_stddev_m: 0.025
+  bearing_noise_stddev_rad: 0.002
+  detection_probability: 0.98
+
+estimator:
+  id: baseline-camera-lidar-ekf
+  output_world_frame: world_enu
+  output_body_frame: body
+  camera_bearing_stddev_rad: 0.008
+  lidar_range_stddev_m: 0.04
+  lidar_bearing_stddev_rad: 0.004
+metrics:
+  alignment: NONE
+  divergence_position_error_m: 5.0
