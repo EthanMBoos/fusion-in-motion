@@ -1,0 +1,12 @@
+prefix_rule(
+    pattern = ["rerun"],
+    decision = "allow",
+    justification = "Allow the local Rerun viewer used for visual verification.",
+    match = [
+        "rerun --version",
+        "rerun runs/run001/reports/baseline/visualization.rrd --headless --window-size 1920x1200",
+    ],
+    not_match = [
+        "cargo run --bin rerun",
+    ],
+)

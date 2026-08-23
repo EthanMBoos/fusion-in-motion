@@ -1,0 +1,6 @@
+name: GPS noise and rate
+base_scenario: initial.yaml
+seeds: [10, 11, 12, 13, 14]
+parameters:
+  gps.rate_hz: [1.0, 2.0, 5.0]
+  gps.horizontal_position_stddev_m: [0.1, 0.5, 1.0]

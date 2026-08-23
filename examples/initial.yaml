@@ -1,0 +1,133 @@
+format_version: 1
+run_id: initial-gps-imu-object-tracking
+duration_s: 16.0
+motion_speed_factor: 1.0
+local_epoch: synthetic-enu
+root_seed: 20260823
+
+platform:
+  model: planar_ground
+  body_frame: body
+  world_frame: world_enu
+
+world:
+  objects:
+    - id: stationary
+      association_key: stationary
+      initial_position_m: { x: 8.0, y: 4.0, z: 0.0 }
+      velocity_world_mps: { x: 0.0, y: 0.0, z: 0.0 }
+    - id: moving
+      association_key: moving
+      initial_position_m: { x: 5.0, y: -3.0, z: 0.0 }
+      velocity_world_mps: { x: 0.15, y: 0.35, z: 0.0 }
+
+trajectory:
+  - { id: initial-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: accelerate, duration_s: 2.0, longitudinal_acceleration_mps2: 0.5, yaw_rate_radps: 0.0 }
+  - { id: straight, duration_s: 2.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: left-turn, duration_s: 2.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.5 }
+  - { id: post-turn, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: decelerate, duration_s: 2.0, longitudinal_acceleration_mps2: -0.5, yaw_rate_radps: 0.0 }
+  - { id: stopped, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: restart, duration_s: 1.0, longitudinal_acceleration_mps2: 0.5, yaw_rate_radps: 0.0 }
+  - { id: right-turn, duration_s: 2.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: -0.5 }
+  - { id: final-deceleration, duration_s: 1.0, longitudinal_acceleration_mps2: -0.5, yaw_rate_radps: 0.0 }
+  - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+
+imu:
+  enabled: true
+  instance_id: imu.primary
+  mount:
+    frame: imu
+    position_m: { x: 0.0, y: 0.0, z: 0.0 }
+    roll_rad: 0.0
+    pitch_rad: 0.0
+    yaw_rad: 0.0
+  rate_hz: 100.0
+  clock_offset_ns: 0
+  latency_ns: 1000000
+  gyro_white_noise_density_radps_sqrt_hz: 0.0008
+  accel_white_noise_density_mps2_sqrt_hz: 0.012
+  gyro_turn_on_bias_radps: { x: 0.0, y: 0.0, z: 0.003 }
+  accel_turn_on_bias_mps2: { x: 0.025, y: 0.0, z: 0.0 }
+  gyro_bias_random_walk_radps_sqrt_s: 0.00002
+  accel_bias_random_walk_mps2_sqrt_s: 0.0005
+  gyro_saturation_radps: 8.0
+  accel_saturation_mps2: 80.0
+  quantization_step: 0.000001
+
+gps:
+  enabled: true
+  instance_id: gps.primary
+  mount:
+    frame: gps
+    position_m: { x: 0.0, y: 0.0, z: 0.0 }
+    roll_rad: 0.0
+    pitch_rad: 0.0
+    yaw_rad: 0.0
+  rate_hz: 2.0
+  latency_ns: 120000000
+  horizontal_position_stddev_m: 0.25
+  vertical_position_stddev_m: 0.5
+  altitude_valid: false
+
+camera:
+  enabled: true
+  instance_id: camera.primary
+  mount:
+    frame: camera
+    position_m: { x: 0.0, y: 0.0, z: 0.0 }
+    roll_rad: 0.0
+    pitch_rad: 0.0
+    yaw_rad: 0.0
+  rate_hz: 10.0
+  latency_ns: 18000000
+  horizontal_fov_rad: 2.8
+  vertical_fov_rad: 1.6
+  max_range_m: 25.0
+  bearing_noise_stddev_rad: 0.006
+  detection_probability: 0.96
+
+lidar:
+  enabled: true
+  instance_id: lidar.primary
+  mount:
+    frame: lidar
+    position_m: { x: 0.0, y: 0.0, z: 0.0 }
+    roll_rad: 0.0
+    pitch_rad: 0.0
+    yaw_rad: 0.0
+  rate_hz: 5.0
+  latency_ns: 32000000
+  horizontal_fov_rad: 6.283185307179586
+  vertical_fov_rad: 1.6
+  max_range_m: 25.0
+  scan_duration_ns: 80000000
+  range_noise_stddev_m: 0.025
+  bearing_noise_stddev_rad: 0.002
+  detection_probability: 0.98
+
+ego_estimator:
+  id: gps-imu-ekf
+  output_world_frame: world_enu
+  output_body_frame: body
+  timing_compensation: true
+  history_duration_ns: 1000000000
+  gps_gate_sigma: 4.0
+  initial_position_stddev_m: 0.5
+  initial_yaw_stddev_rad: 0.1
+  initial_speed_stddev_mps: 0.5
+  initial_gyro_bias_stddev_radps: 0.1
+  initial_accel_bias_stddev_mps2: 0.5
+
+object_tracker:
+  id: planar-object-ekf
+  timing_compensation: true
+  history_duration_ns: 1000000000
+  acceleration_noise_stddev_mps2: 0.5
+  gate_sigma: 4.0
+
+metrics:
+  max_truth_match_gap_ns: 10000000
+  ego_divergence_position_error_m: 5.0
+  track_divergence_position_error_m: 5.0

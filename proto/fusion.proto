@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package fusion;
+
+enum StampReference {
+  STAMP_REFERENCE_UNSPECIFIED = 0;
+  STAMP_REFERENCE_START = 1;
+  STAMP_REFERENCE_MIDPOINT = 2;
+  STAMP_REFERENCE_END = 3;
+  STAMP_REFERENCE_TRIGGER = 4;
+  STAMP_REFERENCE_UNKNOWN = 5;
+}
+
+enum EstimateStatus {
+  ESTIMATE_STATUS_UNSPECIFIED = 0;
+  ESTIMATE_STATUS_INITIALIZING = 1;
+  ESTIMATE_STATUS_VALID = 2;
+  ESTIMATE_STATUS_DIVERGED = 3;
+}
+
+enum CovarianceKind {
+  COVARIANCE_KIND_UNSPECIFIED = 0;
+  COVARIANCE_KIND_UNKNOWN = 1;
+  COVARIANCE_KIND_FULL = 2;
+}
+
+enum EgoStateModel {
+  EGO_STATE_MODEL_UNSPECIFIED = 0;
+  EGO_STATE_MODEL_PLANAR = 1;
+}
+
+enum ObjectStateModel {
+  OBJECT_STATE_MODEL_UNSPECIFIED = 0;
+  OBJECT_STATE_MODEL_PLANAR_CONSTANT_VELOCITY = 1;
+}
+
+enum EgoSource {
+  EGO_SOURCE_UNSPECIFIED = 0;
+  EGO_SOURCE_ESTIMATED = 1;
+  EGO_SOURCE_TRUTH = 2;
+}
+
+message Vec3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double w = 4;
+}
+
+message Pose {
+  Vec3 position = 1;
+  Quaternion orientation_xyzw = 2;
+  string parent_frame = 3;
+  string child_frame = 4;
+}
+
+message RecordHeader {
+  uint32 format_version = 1;
+  string run_id = 2;
+  string record_id = 3;
+  string sensor_instance_id = 4;
+  sint64 reported_stamp_ns = 5;
+  StampReference stamp_reference = 6;
+  sint64 acquisition_duration_ns = 7;
+  sint64 receipt_time_ns = 8;
+  uint64 sensor_sequence = 9;
+  uint64 delivery_index = 10;
+  bool valid = 11;
+  repeated string quality_flags = 12;
+}
+
+message SensorCalibration {
+  RecordHeader header = 1;
+  Pose pose_b_s = 2;
+}
+
+message ImuSample {
+  RecordHeader header = 1;
+  Vec3 angular_rate_radps = 2;
+  Vec3 specific_force_mps2 = 3;
+}
+
+message GpsFix {
+  RecordHeader header = 1;
+  Vec3 position_world_m = 2;
+  repeated double position_covariance = 3;
+  string frame_id = 4;
+  bool altitude_valid = 5;
+}
+
+message CameraDetection {
+  string detection_id = 1;
+  string association_key = 2;
+  double azimuth_rad = 3;
+  double elevation_rad = 4;
+  repeated double angular_covariance = 5;
+}
+
+message CameraFrame {
+  RecordHeader header = 1;
+  string frame_id = 2;
+  repeated CameraDetection detections = 3;
+  string association_mode = 4;
+}
+
+message LidarDetection {
+  string detection_id = 1;
+  string association_key = 2;
+  double range_m = 3;
+  double azimuth_rad = 4;
+  double elevation_rad = 5;
+  sint64 acquisition_offset_ns = 6;
+  repeated double spherical_covariance = 7;
+}
+
+message LidarScan {
+  RecordHeader header = 1;
+  string frame_id = 2;
+  repeated LidarDetection detections = 3;
+  string association_mode = 4;
+}
+
+message EgoTruthState {
+  sint64 truth_time_ns = 1;
+  Pose pose_w_b = 2;
+  Vec3 velocity_world_mps = 3;
+  Vec3 acceleration_world_mps2 = 4;
+  Vec3 angular_velocity_body_radps = 5;
+  double forward_speed_mps = 6;
+  double path_distance_m = 7;
+}
+
+message ObjectTruthState {
+  string object_id = 1;
+  sint64 truth_time_ns = 2;
+  Vec3 position_world_m = 3;
+  Vec3 velocity_world_mps = 4;
+}
+
+message ImuEffectsTruth {
+  Vec3 gyro_bias_body_radps = 1;
+  Vec3 accel_bias_body_mps2 = 2;
+}
+
+message DetectionTruth {
+  string detection_id = 1;
+  string object_id = 2;
+}
+
+message ObservationTruth {
+  string visible_record_id = 1;
+  sint64 acquisition_start_truth_ns = 2;
+  sint64 acquisition_end_truth_ns = 3;
+  sint64 publish_truth_ns = 4;
+  sint64 arrival_truth_ns = 5;
+  oneof ideal_observation {
+    ImuSample ideal_imu = 10;
+    GpsFix ideal_gps = 11;
+    CameraFrame ideal_camera = 12;
+    LidarScan ideal_lidar = 13;
+  }
+  ImuEffectsTruth imu_effects = 20;
+  repeated DetectionTruth detection_truth = 21;
+}
+
+message EgoStateEstimate {
+  string estimator_id = 1;
+  sint64 estimate_time_ns = 2;
+  sint64 emission_time_ns = 3;
+  Pose pose_w_b = 4;
+  Vec3 velocity_world_mps = 5;
+  EstimateStatus status = 6;
+  CovarianceKind covariance_kind = 7;
+  repeated double covariance = 8;
+  uint64 revision = 9;
+  EgoStateModel state_model = 10;
+  optional double gyro_bias_z_radps = 11;
+  optional double accel_bias_x_mps2 = 12;
+}
+
+message ObjectTrack {
+  string tracker_id = 1;
+  string track_id = 2;
+  string association_key = 3;
+  sint64 estimate_time_ns = 4;
+  sint64 emission_time_ns = 5;
+  Vec3 position_world_m = 6;
+  Vec3 velocity_world_mps = 7;
+  EstimateStatus status = 8;
+  CovarianceKind covariance_kind = 9;
+  repeated double covariance = 10;
+  uint64 revision = 11;
+  ObjectStateModel state_model = 12;
+  EgoSource ego_source = 13;
+  string frame_id = 14;
+}

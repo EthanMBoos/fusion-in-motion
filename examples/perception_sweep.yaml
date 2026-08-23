@@ -1,0 +1,6 @@
+name: Camera and lidar detection rate
+base_scenario: initial.yaml
+seeds: [10, 11, 12, 13, 14]
+parameters:
+  camera.detection_probability: [0.6, 0.96]
+  lidar.detection_probability: [0.6, 0.98]
