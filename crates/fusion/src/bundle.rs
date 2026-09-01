@@ -173,10 +173,28 @@ impl BundleManifest {
 
 pub fn prepare(output: &Path, scenario: &ResolvedScenario) -> Result<()> {
     if output.exists() {
-        bail!(
-            "output directory {} already exists; choose a new directory to avoid overwriting an experiment",
-            output.display()
-        );
+        let existing_scenario_path = output.join("scenario.resolved.yaml");
+        let existing_scenario = crate::scenario::load_and_resolve(&existing_scenario_path)
+            .with_context(|| {
+                format!(
+                    "output directory {} already exists but is not a reusable experiment bundle",
+                    output.display()
+                )
+            })?;
+        if existing_scenario.run_id != scenario.run_id {
+            bail!(
+                "output directory {} belongs to run {}; choose a new directory for run {}",
+                output.display(),
+                existing_scenario.run_id,
+                scenario.run_id
+            );
+        }
+        fs::remove_dir_all(output).with_context(|| {
+            format!(
+                "failed to replace existing output directory {}",
+                output.display()
+            )
+        })?;
     }
     fs::create_dir_all(output.join("estimates"))?;
     fs::create_dir_all(output.join("reports/baseline"))?;

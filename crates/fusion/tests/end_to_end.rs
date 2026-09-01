@@ -47,6 +47,14 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     let output = temp.path().join("run");
     fusion_in_motion::run_experiment(&example(), &output)?;
 
+    let stale_artifact = output.join("stale-artifact");
+    fs::write(&stale_artifact, "removed when the same run is repeated")?;
+    fusion_in_motion::run_experiment(&example(), &output)?;
+    assert!(
+        !stale_artifact.exists(),
+        "rerunning the same experiment should replace its output bundle"
+    );
+
     for relative in [
         "manifest.json",
         "scenario.resolved.yaml",

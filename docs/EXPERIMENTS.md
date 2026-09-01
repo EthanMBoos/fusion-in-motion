@@ -126,7 +126,10 @@ reports/baseline/visualization.rrd
 after estimation for scoring and visualization. The manifest records the
 scenario seed, software information, warnings, run status, and artifact hashes.
 
-Run folders are never overwritten. Use a new output path for a new experiment.
+Repeating a run with the same `run_id` replaces its existing output folder, so
+the initial example command can be rerun as-is. An output folder belonging to a
+different `run_id` is not overwritten; use a new output path for a different
+experiment.
 
 ## Randomness
 

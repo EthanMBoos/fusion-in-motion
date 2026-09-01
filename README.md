@@ -38,6 +38,10 @@ repository root:
 fusion run examples/initial.yaml --output runs/initial --view
 ```
 
+You can run the same command again at any time. Fusion replaces the existing
+`runs/initial` bundle because it belongs to the same `run_id`; it will not
+overwrite that directory if it belongs to a different experiment.
+
 Rerun opens a looping dashboard with the true and estimated path, ego-centric
 camera and lidar views, estimation error, IMU data, and observation counts. The
 run folder also contains the sensor measurements, hidden truth, estimates, and
