@@ -81,8 +81,8 @@ pub fn write_bundle_visualization(
 
     rec.log_static(
         "dashboard/setup",
-        &rerun::TextDocument::new(format!(
-            "# Scenario\n\n**Motion:** {:.2}x speed · {:.1} s simulated path\n\n**Camera:** {:.1} Hz · {:.1} ms latency\n\n**Lidar:** {:.1} Hz · {:.1} ms latency · {:.1} ms scan\n\n**Seed:** {}",
+        &rerun::TextDocument::from_markdown(format!(
+            "**Path:** {:.2}x speed · {:.1} s  \n**Camera:** {:.1} Hz · {:.1} ms latency  \n**Lidar:** {:.1} Hz · {:.1} ms latency · {:.1} ms scan  \n**Seed:** {}",
             scenario.motion_speed_factor,
             scenario.effective_duration_s(),
             scenario.camera.rate_hz,
@@ -95,8 +95,8 @@ pub fn write_bundle_visualization(
     )?;
     rec.log_static(
         "dashboard/guide",
-        &rerun::TextDocument::new(
-            "# Dashboard\n\n**Map:** green truth and pink estimate.\n\n**Sensors:** camera rays show bearing only. Lidar points show range and bearing; color runs from early to late in the scan.\n\n**Timing:** age is receipt time minus reported timestamp. Acquisition duration is the interval covered by one record.\n\n**Error:** the gray line is the divergence threshold. These plots show accuracy, not covariance consistency.\n\nDrag the timeline to inspect one time across all panels.",
+        &rerun::TextDocument::from_markdown(
+            "- **Map:** green truth, pink estimate.\n- **Camera:** bearings only; no depth.\n- **Lidar:** range and bearing; orange is early in the scan, cyan is late.\n- **Timing:** age is receipt time minus reported time. Acquisition is the interval covered by one record.\n- **Error:** accuracy only; covariance consistency is not evaluated.\n\nDrag the timeline to inspect one time across every panel.",
         ),
     )?;
 
@@ -106,12 +106,7 @@ pub fn write_bundle_visualization(
     log_motion_segments(&rec, &scenario)?;
     log_vehicle_motion(&rec, &truth, &estimates)?;
     log_measurements(&rec, &measurements, &truth)?;
-    log_errors(
-        &rec,
-        &truth,
-        &estimates,
-        scenario.metrics.divergence_position_error_m,
-    )?;
+    log_errors(&rec, &truth, &estimates)?;
     send_dashboard_blueprint(&rec)?;
     rec.flush_blocking()?;
     Ok(())
@@ -141,11 +136,6 @@ fn log_series_styles(rec: &rerun::RecordingStream) -> Result<()> {
             ESTIMATE_COLOR,
         ),
         ("plots/error/yaw_rad", "yaw error (rad)", YAW_ERROR_COLOR),
-        (
-            "plots/error/divergence_threshold_m",
-            "divergence threshold (m)",
-            REFERENCE_COLOR,
-        ),
         ("plots/imu/gyro_z_radps", "gyro z (rad/s)", CAMERA_COLOR),
         ("plots/imu/accel_x_mps2", "accel x (m/s²)", LIDAR_COLOR),
         ("plots/observations/camera", "camera features", CAMERA_COLOR),
@@ -219,7 +209,7 @@ fn log_static_map(
         "map/trajectories/truth",
         &rerun::LineStrips2D::new([truth_path])
             .with_colors([TRUTH_COLOR])
-            .with_radii([0.055]),
+            .with_radii([rerun::Radius::new_ui_points(2.0)]),
     )?;
 
     let estimate_path = estimates
@@ -227,11 +217,23 @@ fn log_static_map(
         .filter_map(|estimate| estimate.pose_w_b.as_ref()?.position.as_ref())
         .map(point2)
         .collect::<Vec<_>>();
+    let marker_stride = (estimate_path.len() / 24).max(1);
+    let estimate_markers = estimate_path
+        .iter()
+        .copied()
+        .step_by(marker_stride)
+        .collect::<Vec<_>>();
     rec.log_static(
         "map/trajectories/estimate",
         &rerun::LineStrips2D::new([estimate_path])
             .with_colors([ESTIMATE_COLOR])
-            .with_radii([0.025]),
+            .with_radii([rerun::Radius::new_ui_points(0.9)]),
+    )?;
+    rec.log_static(
+        "map/trajectories/estimate_samples",
+        &rerun::Points2D::new(estimate_markers)
+            .with_colors([ESTIMATE_COLOR])
+            .with_radii([rerun::Radius::new_ui_points(3.0)]),
     )?;
     Ok(())
 }
@@ -244,7 +246,7 @@ fn log_sensor_references(rec: &rerun::RecordingStream, scenario: &ResolvedScenar
                 .with_origins([[0.0, 0.0]])
                 .with_colors([TRUTH_COLOR])
                 .with_radii([0.06])
-                .with_labels(["platform forward"]),
+                .with_labels(["forward"]),
         )?;
     }
 
@@ -288,15 +290,25 @@ fn log_range_reference(
     max_range_m: f64,
     fov_rad: f64,
 ) -> Result<()> {
-    let rings = [max_range_m * 0.5, max_range_m]
+    let radii = [max_range_m * 0.25, max_range_m * 0.5];
+    let rings = radii
         .into_iter()
         .map(|radius| arc(radius, fov_rad, 96))
         .collect::<Vec<_>>();
+    let labels = radii.map(|radius| format!("{radius:.0} m"));
+    let label_positions = radii.map(|radius| polar(radius, std::f64::consts::FRAC_PI_2));
     rec.log_static(
         path,
         &rerun::LineStrips2D::new(rings)
             .with_colors([REFERENCE_COLOR])
-            .with_radii([0.012]),
+            .with_radii([rerun::Radius::new_ui_points(0.75)]),
+    )?;
+    rec.log_static(
+        format!("{path}_labels"),
+        &rerun::Points2D::new(label_positions)
+            .with_colors([REFERENCE_COLOR])
+            .with_radii([rerun::Radius::new_ui_points(1.5)])
+            .with_labels(labels),
     )?;
     if fov_rad < std::f64::consts::TAU - 1.0e-6 {
         log_fov_reference(rec, &format!("{path}_edges"), fov_rad, max_range_m)?;
@@ -332,8 +344,8 @@ fn log_motion_segments(rec: &rerun::RecordingStream, scenario: &ResolvedScenario
         rec.set_duration_secs("time", start_s / scenario.motion_speed_factor);
         rec.log(
             "dashboard/now",
-            &rerun::TextDocument::new(format!(
-                "# Motion\n\n**{}** ({}/{})\n\nAcceleration: {:.2} m/s² · yaw rate: {:.2} rad/s",
+            &rerun::TextDocument::from_markdown(format!(
+                "**{}** · segment {} of {}\n\nAcceleration: {:.2} m/s²  \nYaw rate: {:.2} rad/s",
                 segment.id,
                 index + 1,
                 scenario.trajectory.len(),
@@ -459,13 +471,13 @@ fn log_measurements(
                     "sensors/lidar/returns",
                     &rerun::Points2D::new(points)
                         .with_colors(colors.clone())
-                        .with_radii([0.14]),
+                        .with_radii([rerun::Radius::new_ui_points(3.5)]),
                 )?;
                 rec.log(
                     "sensors/lidar/rays",
                     &rerun::LineStrips2D::new(rays)
                         .with_colors(colors)
-                        .with_radii([0.012]),
+                        .with_radii([rerun::Radius::new_ui_points(0.8)]),
                 )?;
                 log_lidar_platform_motion(rec, truth, header)?;
                 rec.log(
@@ -534,7 +546,7 @@ fn log_lidar_platform_motion(
 fn lidar_time_color(fraction: f64) -> u32 {
     let f = fraction.clamp(0.0, 1.0);
     let mix = |early: f64, late: f64| (early + (late - early) * f).round() as u32;
-    (mix(35.0, 120.0) << 24) | (mix(75.0, 225.0) << 16) | (255 << 8) | 255
+    (mix(255.0, 70.0) << 24) | (mix(145.0, 220.0) << 16) | (mix(35.0, 255.0) << 8) | 255
 }
 
 fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
@@ -549,10 +561,10 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
     let now = TextDocumentView::new("Motion").with_origin("dashboard/now");
     let guide = TextDocumentView::new("Guide").with_origin("dashboard/guide");
     let sensors = Grid::new([
-        Spatial2DView::new("Camera bearing (no depth)")
+        Spatial2DView::new("Camera bearings (no depth)")
             .with_origin("sensors/camera")
             .into(),
-        Spatial2DView::new("Lidar range + bearing")
+        Spatial2DView::new("Lidar scan (orange → cyan)")
             .with_origin("sensors/lidar")
             .into(),
     ])
@@ -574,7 +586,7 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
         Horizontal::new([
             overview.into(),
             Vertical::new([setup.into(), now.into(), guide.into()])
-                .with_row_shares(vec![1.2, 0.7, 2.6])
+                .with_row_shares(vec![1.2, 1.0, 2.2])
                 .into(),
         ])
         .with_column_shares(vec![3.6, 1.7])
@@ -582,7 +594,7 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
         sensors.into(),
         plots.into(),
     ])
-    .with_row_shares(vec![3.0, 2.2, 1.8]);
+    .with_row_shares(vec![3.0, 2.4, 2.4]);
 
     Blueprint::new(root)
         .with_auto_views(false)
@@ -591,7 +603,7 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
         .with_selection_panel(SelectionPanel::new().with_state(PanelState::Collapsed))
         .with_time_panel(
             TimePanel::new()
-                .with_state(PanelState::Expanded)
+                .with_state(PanelState::Collapsed)
                 .with_timeline("time")
                 .with_play_state(PlayState::Playing)
                 .with_loop_mode(LoopMode::All)
@@ -605,7 +617,6 @@ fn log_errors(
     rec: &rerun::RecordingStream,
     truth: &[TruthState],
     estimates: &[StateEstimate],
-    divergence_threshold_m: f64,
 ) -> Result<()> {
     for estimate in estimates {
         let (Some(estimate_pose), Some(truth_state)) = (
@@ -633,10 +644,6 @@ fn log_errors(
             &rerun::Scalars::single(position_error),
         )?;
         rec.log("plots/error/yaw_rad", &rerun::Scalars::single(yaw_error))?;
-        rec.log(
-            "plots/error/divergence_threshold_m",
-            &rerun::Scalars::single(divergence_threshold_m),
-        )?;
     }
     Ok(())
 }
