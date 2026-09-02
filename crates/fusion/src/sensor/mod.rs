@@ -2,7 +2,6 @@ mod camera;
 mod geometry;
 mod imu;
 mod lidar;
-mod radar;
 
 use anyhow::Result;
 use fusion_schema::messages::{
@@ -35,7 +34,6 @@ pub fn generate(scenario: &ResolvedScenario) -> Result<GeneratedRun> {
     imu::generate(scenario, &trajectory, &random, &mut pending);
     camera::generate(scenario, &trajectory, &random, &mut pending);
     lidar::generate(scenario, &trajectory, &random, &mut pending);
-    radar::generate(scenario, &trajectory, &random, &mut pending);
 
     // Receipt time is the estimator-visible order. Priority and stable ID make
     // simultaneous arrivals deterministic without depending on insertion order.

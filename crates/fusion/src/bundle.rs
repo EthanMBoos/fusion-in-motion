@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use fusion_schema::{
     FILE_DESCRIPTOR_SET,
     messages::{
-        CameraFrame, ImuSample, LandmarkMap, LidarScan, ObservationTruth, RadarScan, RecordHeader,
+        CameraFrame, ImuSample, LandmarkMap, LidarScan, ObservationTruth, RecordHeader,
         StateEstimate, TruthState,
     },
 };
@@ -29,7 +29,6 @@ pub enum MeasurementRecord {
     Imu(ImuSample),
     Camera(CameraFrame),
     Lidar(LidarScan),
-    Radar(RadarScan),
 }
 
 impl MeasurementRecord {
@@ -39,7 +38,6 @@ impl MeasurementRecord {
             Self::Imu(message) => message.header.as_ref(),
             Self::Camera(message) => message.header.as_ref(),
             Self::Lidar(message) => message.header.as_ref(),
-            Self::Radar(message) => message.header.as_ref(),
         }
         .expect("generated measurements always have headers")
     }
@@ -50,7 +48,6 @@ impl MeasurementRecord {
             Self::Imu(message) => message.header.as_mut(),
             Self::Camera(message) => message.header.as_mut(),
             Self::Lidar(message) => message.header.as_mut(),
-            Self::Radar(message) => message.header.as_mut(),
         }
         .expect("generated measurements always have headers")
     }
@@ -258,9 +255,6 @@ pub fn read_measurements(path: &Path) -> Result<Vec<MeasurementRecord>> {
             "fusion.LidarScan" => {
                 MeasurementRecord::Lidar(LidarScan::decode(message.data.as_ref())?)
             }
-            "fusion.RadarScan" => {
-                MeasurementRecord::Radar(RadarScan::decode(message.data.as_ref())?)
-            }
             other => bail!("unsupported estimator-visible schema {other}"),
         };
         if let Some(previous) = previous_delivery
@@ -437,21 +431,6 @@ fn write_measurements(path: &Path, measurements: &[MeasurementRecord]) -> Result
         "protobuf",
         &BTreeMap::new(),
     )?;
-    let radar_channel = if measurements
-        .iter()
-        .any(|measurement| matches!(measurement, MeasurementRecord::Radar(_)))
-    {
-        let radar_schema =
-            writer.add_schema("fusion.RadarScan", "protobuf", FILE_DESCRIPTOR_SET)?;
-        Some(writer.add_channel(
-            radar_schema,
-            "/measurement/radar/primary",
-            "protobuf",
-            &BTreeMap::new(),
-        )?)
-    } else {
-        None
-    };
     for measurement in measurements {
         let header = measurement.header();
         match measurement {
@@ -487,18 +466,6 @@ fn write_measurements(path: &Path, measurements: &[MeasurementRecord]) -> Result
                 header.receipt_time_ns,
                 &message.encode_to_vec(),
             )?,
-            MeasurementRecord::Radar(message) => {
-                let radar_channel = radar_channel
-                    .ok_or_else(|| anyhow::anyhow!("radar measurement has no MCAP channel"))?;
-                write_message(
-                    &mut writer,
-                    radar_channel,
-                    header.sensor_sequence as u32,
-                    header.receipt_time_ns,
-                    header.receipt_time_ns,
-                    &message.encode_to_vec(),
-                )?
-            }
         }
     }
     writer.finish()?;

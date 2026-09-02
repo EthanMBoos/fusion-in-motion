@@ -2,7 +2,6 @@ mod camera;
 mod lidar;
 mod observation;
 mod propagation;
-mod radar;
 mod state;
 
 use std::collections::BTreeMap;
@@ -58,13 +57,6 @@ pub fn run_baseline(
                 frame,
             )?,
             MeasurementRecord::Lidar(scan) => lidar::update(
-                &mut filter.state,
-                &mut filter.covariance,
-                &filter.landmarks,
-                config,
-                scan,
-            )?,
-            MeasurementRecord::Radar(scan) => radar::update(
                 &mut filter.state,
                 &mut filter.covariance,
                 &filter.landmarks,

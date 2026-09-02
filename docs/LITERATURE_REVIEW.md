@@ -252,7 +252,7 @@ calibration approach](https://arxiv.org/abs/1808.00692). Rehder et al.'s
 practical multi-camera/inertial calibration foundation.
 
 [iKalibr](https://arxiv.org/abs/2407.11420) extends targetless spatiotemporal
-calibration across IMUs, cameras, lidars, depth cameras, and radars and requires
+calibration across IMUs, cameras, lidars, and depth cameras and requires
 dynamically excited collection. [GLIC-Calib](https://doi.org/10.1109/IROS60139.2025.11247264)
 addresses ground-vehicle lidar–IMU and camera–IMU calibration using vehicle
 motion and ground constraints. The [OpenVINS calibration
@@ -410,8 +410,6 @@ sensor configurations.
 | Camera raw | image plus calibration and exposure metadata | photometry, auto-exposure, lens effects, weather; external renderer or real log |
 | Lidar analytic | timed ray/range or point | scan pattern, FOV/range, per-ray pose, beam/noise approximation, occlusion, return/dropout policy |
 | Lidar raw | packet or point cloud | materials, intensity, weather, interference, multipath, waveform/return selection; external provider |
-| Radar analytic | range, angle, radial velocity, covariance/SNR detection | probability of detection, range/angle/range-rate uncertainty, clutter, ghosts, multipath, RCS proxy, chirp/scan time |
-| Radar raw | heatmap, ADC, or cube | waveform, antenna array, materials/RCS, interference and multipath; specialized external simulation |
 | Magnetometer | sensor-frame field vector | Earth/local field, hard/soft iron, scale/bias, spatial and motor/current disturbance |
 | Barometer | pressure or declared derived altitude | reference/weather pressure, bias/drift, vertical correlation, dynamic pressure/rotor wash |
 | Rangefinder | timed beam range | surface intersection, tilt/FOV, invalid returns, limits, ground clutter |
@@ -436,7 +434,7 @@ continuous-density/discrete covariance conversion, acquisition averaging, and
 clearly enabled or disabled Earth-rotation/coning/sculling effects. Plausible
 but dimensionally wrong IMU simulation is one of the project's highest risks.
 
-### Wheel, GNSS, and radar
+### Wheel and GNSS
 
 Borenstein and Feng, [systematic mobile-robot odometry error measurement and
 correction](https://doi.org/10.1109/70.544770), is the classic wheel-radius and
@@ -450,12 +448,6 @@ Satellite Systems*](https://doi.org/10.1007/978-3-319-42928-1) provide the
 reference-frame, solution-level, and raw-observable foundation. A simple GNSS
 solution model is appropriate for initial experiments; raw carrier-phase ambiguity and satellite
 physics warrant a specialized module.
-
-Patole et al.'s [automotive radar
-survey](https://doi.org/10.1109/SPM.2016.2628914) covers FMCW architecture,
-measurements, and challenges. It is the clearest warning against treating radar
-as a renamed lidar: Doppler/radial velocity, probability of detection, angular
-uncertainty, clutter, RCS/material behavior, ghosts, and multipath are central.
 
 ### UAV aiding sensors
 
@@ -525,15 +517,15 @@ range truth.
 [Isaac Sim](https://docs.isaacsim.omniverse.nvidia.com/latest/sensors/index.html)
 own world assets, physics, actors, rendering, sensors, communication, and
 interactive execution. That integration is valuable for collision, traction,
-photometric effects, material response, radar physics, or a complete autonomy
-stack, but couples the experiment to an engine, update loop, asset system, and
-hardware profile.
+photometric effects, material response, or a complete autonomy stack, but
+couples the experiment to an engine, update loop, asset system, and hardware
+profile.
 
 Fusion in Motion can answer its first questions with a continuous kinematic
 trajectory and analytic geometry. When an experiment needs rendered RGB,
-material-aware radar/lidar, or contact dynamics, an external simulator should
-consume the declared truth timeline and return an L2 observation. This keeps
-the core experiment loop understandable.
+material-aware lidar, or contact dynamics, an external simulator should consume
+the declared truth timeline and return an L2 observation. This keeps the core
+experiment loop understandable.
 
 UAV-specific external options include [Pegasus
 Simulator](https://pegasussimulator.github.io/PegasusSimulator/) and
@@ -692,21 +684,18 @@ license/registration, and conversion loss.
 | [M3DGR/Ground-Fusion++](https://arxiv.org/abs/2507.08364) | ground robot | controlled visual/lidar/wheel/GNSS degradation | direct robustness match |
 | [M2UD](https://arxiv.org/abs/2503.12387) | uneven-terrain ground robot | aggressive motion, weather/smoke/darkness, mapping truth | SE(3) ground and degradation |
 | [Oxford RobotCar](https://doi.org/10.1177/0278364916679498) | road vehicle | repeated seasons, camera, lidar, GPS/INS | long-term environmental change |
-| [Oxford Radar RobotCar](https://arxiv.org/abs/1909.01300) | road vehicle | FMCW scanning radar, lidar, camera, GPS/INS | radar experiments and long-range sensing |
-| [Boreas](https://doi.org/10.1177/02783649231160195) | road vehicle | lidar, radar, camera, centimeter GNSS/INS, seasons | all-weather long-term localization |
-| [Boreas Road Trip](https://arxiv.org/abs/2602.16870) | road vehicle | Doppler radar/lidar, camera, dual IMU, wheel, GNSS/INS | current rich driving combination |
-| [MulRan](https://sites.google.com/view/mulran-pr) | road vehicle | radar/lidar repeated routes | radar/lidar place recognition and timing |
+| [Boreas](https://doi.org/10.1177/02783649231160195) | road vehicle | lidar, camera, centimeter GNSS/INS, seasons | all-weather long-term localization |
 | [KITTI](https://doi.org/10.1177/0278364913491297) / [KITTI-360](https://doi.org/10.1109/TPAMI.2022.3179507) | road vehicle | stereo, lidar, GPS/IMU, semantics | canonical compatibility; less suitable for controlled faults |
 | [Newer College](https://doi.org/10.1177/0278364921988297) | handheld/ground-like mapping | lidar, cameras, IMU, detailed map truth | lidar-inertial/visual mapping and motion distortion |
 | [Oxford Spires](https://doi.org/10.1177/02783649251369905) | large-scale mapping rig | synchronized camera/IMU, raw/corrected lidar, survey truth | timing and motion-correction reference |
-| [SEW Multimodal AMR](https://github.com/SEW-Eurodrive-Open-Source/Multimodal_AMR_dataset) | industrial AMR | RGB, thermal, radar, ultrasonic, ToF, laser | unusual modalities and calibration documentation |
+| [SEW Multimodal AMR](https://github.com/SEW-Eurodrive-Open-Source/Multimodal_AMR_dataset) | industrial AMR | RGB, thermal, ultrasonic, ToF, laser | unusual modalities and calibration documentation |
 | [TartanGround](https://arxiv.org/abs/2505.10696) | simulated wheeled/legged | stereo, depth, flow, lidar, semantics, occupancy | external synthetic front-end testing, not real validation |
 
 A sensible import order is:
 
 1. EuRoC or TUM VI for a small, well-understood camera/IMU path;
 2. NTU VIRAL for the aerial multisensor claim; and
-3. M2DGR/M3DGR or Boreas for ground multimodality, degradation, and radar.
+3. M2DGR/M3DGR or Boreas for ground multimodality and degradation.
 
 One deep importer is more scientifically useful than many superficial format
 claims.
@@ -740,7 +729,7 @@ corrects that balance.
 | Gazebo, Webots, CARLA, Isaac Sim | Keep as boundary comparisons and pin versions for adapters. |
 | Copper, Dora, async Rust/ROS 2 | Keep briefly as runtime evidence, not scientific estimation evidence. |
 | MCAP, Protobuf, Rerun | Keep, while distinguishing stored data from a derived viewer. |
-| M3DGR, M2UD, SEW, TartanGround | Keep as recent ground additions and balance with aerial, radar, and canonical datasets. |
+| M3DGR, M2UD, SEW, TartanGround | Keep as recent ground additions and balance with aerial and canonical datasets. |
 
 Claims should retain these qualifications:
 
@@ -754,7 +743,6 @@ Claims should retain these qualifications:
   configured representation.
 - Deterministic logical messages do not imply cross-platform byte-identical
   compressed files.
-- An idealized radar detection model is not raw radar simulation.
 - A fixed seed gives replay, not statistically general performance.
 
 ## 14. Licensing, provenance, and reproducibility cautions
@@ -787,7 +775,7 @@ also need uncertainty, provenance, validity intervals, and known limitations;
 | Observability and calibration literature | exciting and deliberately degenerate profiles; truth/nominal/estimated calibration labels | impressive nominal paths may hide unobservable states |
 | Filter/smoother coexistence | causal, fixed-lag, and offline result classes | full-file “online” adapters can peek ahead |
 | Robust/non-Gaussian work | outlier, mixture, association, common-mode, and recovery experiments | simple early models may overstate modality coverage |
-| IMU/GNSS/wheel/radar references | explicit equations, units, and fidelity levels | plausible but incorrect sensor physics |
+| IMU/GNSS/wheel references | explicit equations, units, and fidelity levels | plausible but incorrect sensor physics |
 | Factor-graph and Lie-group foundations | one SE(3) truth and explicit tangent/covariance conventions | cross-language convention drift |
 | Deterministic random generation and common random numbers | keyed named draws and paired multi-seed trials | byte determinism can still vary by platform/library |
 | Metric/consistency literature | declared alignment/gauge, NIS/NEES math, failures retained | leaderboards may still collapse incompatible tasks |

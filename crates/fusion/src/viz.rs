@@ -18,7 +18,7 @@ const ESTIMATE_COLOR: u32 = 0xFF5577FF;
 const LANDMARK_COLOR: u32 = 0xFFD54FFF;
 const CAMERA_COLOR: u32 = 0x33CCFFFF;
 const LIDAR_COLOR: u32 = 0x4488FFFF;
-const RADAR_COLOR: u32 = 0xFF9933FF;
+const YAW_ERROR_COLOR: u32 = 0xFF9933FF;
 const REFERENCE_COLOR: u32 = 0x667080FF;
 
 pub fn default_visualization_path(bundle: &Path) -> PathBuf {
@@ -68,7 +68,6 @@ pub fn write_bundle_visualization(
             .join(format!("{estimator_id}.mcap")),
     )?;
     let scenario = load_and_resolve(&bundle_path.join("scenario.resolved.yaml"))?;
-    let has_radar = scenario.radar.is_some();
     if truth.is_empty() {
         bail!("cannot visualize a bundle with no truth states");
     }
@@ -80,11 +79,6 @@ pub fn write_bundle_visualization(
         .save(output)
         .with_context(|| format!("failed to create Rerun recording {}", output.display()))?;
 
-    let radar_guide = if has_radar {
-        "\n\n**Radar:** orange points show range and bearing. Arrows show signed radial velocity."
-    } else {
-        ""
-    };
     rec.log_static(
         "dashboard/setup",
         &rerun::TextDocument::new(format!(
@@ -102,13 +96,11 @@ pub fn write_bundle_visualization(
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::new(
-            format!(
-                "# Dashboard\n\n**Map:** green truth and pink estimate.\n\n**Sensors:** camera rays show bearing only. Lidar points show range and bearing; color runs from early to late in the scan.{radar_guide}\n\n**Timing:** age is receipt time minus reported timestamp. Acquisition duration is the interval covered by one record.\n\n**Error:** the gray line is the divergence threshold. These plots show accuracy, not covariance consistency.\n\nDrag the timeline to inspect one time across all panels."
-            ),
+            "# Dashboard\n\n**Map:** green truth and pink estimate.\n\n**Sensors:** camera rays show bearing only. Lidar points show range and bearing; color runs from early to late in the scan.\n\n**Timing:** age is receipt time minus reported timestamp. Acquisition duration is the interval covered by one record.\n\n**Error:** the gray line is the divergence threshold. These plots show accuracy, not covariance consistency.\n\nDrag the timeline to inspect one time across all panels.",
         ),
     )?;
 
-    log_series_styles(&rec, has_radar)?;
+    log_series_styles(&rec)?;
     log_static_map(&rec, &measurements, &truth, &estimates)?;
     log_sensor_references(&rec, &scenario)?;
     log_motion_segments(&rec, &scenario)?;
@@ -120,7 +112,7 @@ pub fn write_bundle_visualization(
         &estimates,
         scenario.metrics.divergence_position_error_m,
     )?;
-    send_dashboard_blueprint(&rec, has_radar)?;
+    send_dashboard_blueprint(&rec)?;
     rec.flush_blocking()?;
     Ok(())
 }
@@ -141,14 +133,14 @@ pub fn open_in_viewer(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn log_series_styles(rec: &rerun::RecordingStream, has_radar: bool) -> Result<()> {
-    let mut series = vec![
+fn log_series_styles(rec: &rerun::RecordingStream) -> Result<()> {
+    let series = [
         (
             "plots/error/position_m",
             "position error (m)",
             ESTIMATE_COLOR,
         ),
-        ("plots/error/yaw_rad", "yaw error (rad)", RADAR_COLOR),
+        ("plots/error/yaw_rad", "yaw error (rad)", YAW_ERROR_COLOR),
         (
             "plots/error/divergence_threshold_m",
             "divergence threshold (m)",
@@ -176,10 +168,6 @@ fn log_series_styles(rec: &rerun::RecordingStream, has_radar: bool) -> Result<()
             ESTIMATE_COLOR,
         ),
     ];
-    if has_radar {
-        series.push(("plots/observations/radar", "radar detections", RADAR_COLOR));
-        series.push(("plots/timing/radar_age_ms", "radar age (ms)", RADAR_COLOR));
-    }
     for (path, name, color) in series {
         let [r, g, b, _] = color.to_be_bytes();
         rec.log_static(
@@ -249,11 +237,7 @@ fn log_static_map(
 }
 
 fn log_sensor_references(rec: &rerun::RecordingStream, scenario: &ResolvedScenario) -> Result<()> {
-    let mut sensor_roots = vec!["sensors/camera", "sensors/lidar"];
-    if scenario.radar.is_some() {
-        sensor_roots.push("sensors/radar");
-    }
-    for root in sensor_roots {
+    for root in ["sensors/camera", "sensors/lidar"] {
         rec.log_static(
             format!("{root}/platform"),
             &rerun::Arrows2D::from_vectors([[1.0, 0.0]])
@@ -276,14 +260,6 @@ fn log_sensor_references(rec: &rerun::RecordingStream, scenario: &ResolvedScenar
         scenario.lidar.max_range_m,
         std::f64::consts::TAU,
     )?;
-    if let Some(radar) = &scenario.radar {
-        log_range_reference(
-            rec,
-            "sensors/radar/reference/range",
-            radar.max_range_m,
-            radar.horizontal_fov_rad,
-        )?;
-    }
     Ok(())
 }
 
@@ -497,43 +473,6 @@ fn log_measurements(
                     &rerun::Scalars::single(scan.returns.len() as f64),
                 )?;
             }
-            MeasurementRecord::Radar(scan) => {
-                let time_ns = scan
-                    .header
-                    .as_ref()
-                    .map_or(0, |header| header.reported_stamp_ns);
-                rec.set_duration_secs("time", seconds(time_ns));
-                if let Some(header) = scan.header.as_ref() {
-                    log_timing(rec, "radar", header)?;
-                }
-                let mut points = Vec::with_capacity(scan.detections.len());
-                let mut vectors = Vec::with_capacity(scan.detections.len());
-                for detection in &scan.detections {
-                    let endpoint = polar(detection.range_m, detection.azimuth_rad);
-                    points.push(endpoint);
-                    vectors.push([
-                        (detection.radial_velocity_mps * detection.azimuth_rad.cos()) as f32,
-                        (detection.radial_velocity_mps * detection.azimuth_rad.sin()) as f32,
-                    ]);
-                }
-                rec.log(
-                    "sensors/radar/detections",
-                    &rerun::Points2D::new(points.clone())
-                        .with_colors([RADAR_COLOR])
-                        .with_radii([0.18]),
-                )?;
-                rec.log(
-                    "sensors/radar/radial_velocity",
-                    &rerun::Arrows2D::from_vectors(vectors)
-                        .with_origins(points)
-                        .with_colors([RADAR_COLOR])
-                        .with_radii([0.035]),
-                )?;
-                rec.log(
-                    "plots/observations/radar",
-                    &rerun::Scalars::single(scan.detections.len() as f64),
-                )?;
-            }
         }
     }
     Ok(())
@@ -598,7 +537,7 @@ fn lidar_time_color(fraction: f64) -> u32 {
     (mix(35.0, 120.0) << 24) | (mix(75.0, 225.0) << 16) | (255 << 8) | 255
 }
 
-fn send_dashboard_blueprint(rec: &rerun::RecordingStream, has_radar: bool) -> Result<()> {
+fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
     use rerun::blueprint::{
         Blueprint, BlueprintActivation, BlueprintPanel, Grid, Horizontal, SelectionPanel,
         Spatial2DView, TextDocumentView, TimePanel, TimeSeriesView, Vertical,
@@ -609,28 +548,15 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream, has_radar: bool) -> Re
     let setup = TextDocumentView::new("Scenario").with_origin("dashboard/setup");
     let now = TextDocumentView::new("Motion").with_origin("dashboard/now");
     let guide = TextDocumentView::new("Guide").with_origin("dashboard/guide");
-    let camera_view = || {
+    let sensors = Grid::new([
         Spatial2DView::new("Camera bearing (no depth)")
             .with_origin("sensors/camera")
-            .into()
-    };
-    let lidar_view = || {
+            .into(),
         Spatial2DView::new("Lidar range + bearing")
             .with_origin("sensors/lidar")
-            .into()
-    };
-    let sensors = if has_radar {
-        Grid::new([
-            camera_view(),
-            lidar_view(),
-            Spatial2DView::new("Radar range + radial velocity")
-                .with_origin("sensors/radar")
-                .into(),
-        ])
-        .with_grid_columns(3)
-    } else {
-        Grid::new([camera_view(), lidar_view()]).with_grid_columns(2)
-    };
+            .into(),
+    ])
+    .with_grid_columns(2);
     let plots = Grid::new([
         TimeSeriesView::new("Estimation error")
             .with_origin("plots/error")

@@ -21,8 +21,6 @@ pub struct ResolvedScenario {
     pub imu: ImuConfig,
     pub camera: CameraConfig,
     pub lidar: LidarConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub radar: Option<RadarConfig>,
     pub estimator: EstimatorConfig,
     pub metrics: MetricsConfig,
 }
@@ -125,21 +123,6 @@ pub struct LidarConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RadarConfig {
-    pub instance_id: String,
-    pub frame: String,
-    pub rate_hz: f64,
-    pub latency_ns: i64,
-    pub horizontal_fov_rad: f64,
-    pub max_range_m: f64,
-    pub range_noise_stddev_m: f64,
-    pub bearing_noise_stddev_rad: f64,
-    pub radial_velocity_noise_stddev_mps: f64,
-    pub detection_probability: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct EstimatorConfig {
     pub id: String,
     pub output_world_frame: String,
@@ -147,12 +130,6 @@ pub struct EstimatorConfig {
     pub camera_bearing_stddev_rad: f64,
     pub lidar_range_stddev_m: f64,
     pub lidar_bearing_stddev_rad: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub radar_range_stddev_m: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub radar_bearing_stddev_rad: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub radar_radial_velocity_stddev_mps: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,28 +171,22 @@ pub fn validate(s: &ResolvedScenario) -> Result<()> {
         s.platform.body_frame != s.platform.world_frame,
         "body and world frames must differ"
     );
-    let mut sensor_frames = vec![
+    let sensor_frames = [
         ("imu", s.imu.frame.as_str()),
         ("camera", s.camera.frame.as_str()),
         ("lidar", s.lidar.frame.as_str()),
     ];
-    if let Some(radar) = &s.radar {
-        sensor_frames.push(("radar", radar.frame.as_str()));
-    }
     for (name, frame) in sensor_frames {
         ensure!(
             frame == s.platform.body_frame,
             "the planar simulator requires the {name} frame to equal the body frame"
         );
     }
-    let mut sensor_ids = vec![
+    let sensor_ids = [
         s.imu.instance_id.as_str(),
         s.camera.instance_id.as_str(),
         s.lidar.instance_id.as_str(),
     ];
-    if let Some(radar) = &s.radar {
-        sensor_ids.push(radar.instance_id.as_str());
-    }
     let unique_sensor_ids: BTreeSet<_> = sensor_ids.iter().copied().collect();
     ensure!(
         unique_sensor_ids.len() == sensor_ids.len()
@@ -255,32 +226,6 @@ pub fn validate(s: &ResolvedScenario) -> Result<()> {
             value.is_finite() && value >= 0.0,
             "{name} must be finite and nonnegative"
         );
-    }
-    if let Some(radar) = &s.radar {
-        validate_rate("radar.rate_hz", radar.rate_hz)?;
-        ensure!(
-            radar.latency_ns >= 0,
-            "sensor latencies must be nonnegative"
-        );
-        validate_detection_sensor(
-            "radar",
-            radar.horizontal_fov_rad,
-            radar.max_range_m,
-            radar.detection_probability,
-        )?;
-        for (name, value) in [
-            ("radar range noise", radar.range_noise_stddev_m),
-            ("radar bearing noise", radar.bearing_noise_stddev_rad),
-            (
-                "radar radial velocity noise",
-                radar.radial_velocity_noise_stddev_mps,
-            ),
-        ] {
-            ensure!(
-                value.is_finite() && value >= 0.0,
-                "{name} must be finite and nonnegative"
-            );
-        }
     }
     validate_world(s)?;
     validate_estimator(s)?;
@@ -392,35 +337,6 @@ fn validate_estimator(s: &ResolvedScenario) -> Result<()> {
         ensure!(
             value > 0.0 && value.is_finite(),
             "{name} must be positive and finite"
-        );
-    }
-    let radar_tuning = [
-        (
-            "estimator radar range standard deviation",
-            s.estimator.radar_range_stddev_m,
-        ),
-        (
-            "estimator radar bearing standard deviation",
-            s.estimator.radar_bearing_stddev_rad,
-        ),
-        (
-            "estimator radar radial velocity standard deviation",
-            s.estimator.radar_radial_velocity_stddev_mps,
-        ),
-    ];
-    if s.radar.is_some() {
-        for (name, value) in radar_tuning {
-            let value = value
-                .ok_or_else(|| anyhow::anyhow!("{name} is required when radar is configured"))?;
-            ensure!(
-                value > 0.0 && value.is_finite(),
-                "{name} must be positive and finite"
-            );
-        }
-    } else {
-        ensure!(
-            radar_tuning.iter().all(|(_, value)| value.is_none()),
-            "radar estimator settings require a radar sensor"
         );
     }
     Ok(())

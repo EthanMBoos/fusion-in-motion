@@ -50,16 +50,16 @@ camera and lidar views, estimation error, IMU data, and observation counts. The
 run folder also contains the sensor measurements, hidden truth, estimates, and
 metrics needed to inspect or repeat the result.
 
-[Experiments](docs/EXPERIMENTS.md) explains the scenario settings, optional
-radar example, parameter sweeps, and run folders. To evaluate another estimator
-against the same measurements, see [Using another estimator](docs/ESTIMATORS.md).
+[Experiments](docs/EXPERIMENTS.md) explains the scenario settings, parameter
+sweeps, and run folders. To evaluate another estimator against the same
+measurements, see [Using another estimator](docs/ESTIMATORS.md).
 
 ## What is simulated today
 
-The current sensors produce lightweight analytic observations rather than raw
-images, dense point clouds, or raw radar data. Landmark association is supplied
-to the estimator. This keeps the first example understandable while exercising
-sensor timing, noise, motion, replay, estimation, scoring, and visualization.
+The camera and lidar produce lightweight analytic observations rather than raw
+images or dense point clouds. Landmark association is supplied to the
+estimator. This keeps the first example understandable while exercising sensor
+timing, noise, motion, replay, estimation, scoring, and visualization.
 
 These experiments characterize the configured model. They are not claims
 about the performance of a physical sensor or a production runtime.

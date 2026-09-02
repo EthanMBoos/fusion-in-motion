@@ -5,7 +5,7 @@ adds one platform capability, reproduces a recognizable result from the
 state-estimation literature, and provides the foundation for the next demo.
 
 The project already has the necessary core: deterministic planar motion,
-analytic IMU/camera/lidar/radar measurements, explicit acquisition and receipt
+analytic IMU, camera, and lidar measurements, explicit acquisition and receipt
 times, per-return lidar timing, hidden truth, MCAP/Protobuf bundles, a baseline
 EKF, parameter sweeps, scoring, and Rerun visualization.
 
@@ -13,7 +13,7 @@ EKF, parameter sweeps, scoring, and Rerun visualization.
 
 | Demo | Status | Available now |
 | --- | --- | --- |
-| Current 2D demo | **Runnable** | IMU, camera, timed lidar, optional radar, dashboard, scoring, and sweeps |
+| Current 2D demo | **Runnable** | IMU, camera, timed lidar, dashboard, scoring, and sweeps |
 | 1. Accuracy vs consistency | Planned | Accuracy metrics exist; covariance consistency metrics and uncertainty plots do not |
 | 2. Delayed measurements | Planned | Latency and measurement age exist; discard and fixed-lag policies do not |
 | 3. Lidar scan timing | **Partly runnable** | Per-return time, scan color, and platform motion are visible; deskewed estimator comparison is not implemented |
@@ -64,8 +64,8 @@ happens when otherwise valid measurements arrive late.
 ## 2. Delayed measurements need state history
 
 The measurement bundle is already ordered by receipt time and preserves the
-original acquisition time. The current EKF applies delayed camera, lidar, and
-radar observations to its current state.
+original acquisition time. The current EKF applies delayed camera and lidar
+observations to its current state.
 
 Compare three policies:
 

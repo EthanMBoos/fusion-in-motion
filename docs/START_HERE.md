@@ -171,4 +171,4 @@ fusion sweep examples/beginner_sweep.yaml --output runs/beginner-sweep
 
 Read `runs/beginner-sweep/reports/summary.md`. See
 [Experiments](EXPERIMENTS.md) for trajectory changes, sensor noise, missed
-detections, radar, estimator assumptions, and larger sweeps.
+detections, estimator assumptions, and larger sweeps.

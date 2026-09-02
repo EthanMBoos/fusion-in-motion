@@ -31,13 +31,6 @@ Run it with:
 fusion run examples/initial.yaml --view
 ```
 
-Radar is optional. The separate radar example adds analytic range, bearing,
-and radial-velocity detections:
-
-```sh
-fusion run examples/with_radar.yaml --view
-```
-
 ## Scenario settings
 
 Scenario YAML contains the motion, landmarks, sensor settings, random seed,
@@ -52,8 +45,6 @@ Useful settings include:
 - sensor rate, range, field of view, and latency;
 - IMU noise, bias, saturation, and quantization;
 - camera and lidar noise and detection probability;
-- optional radar range, bearing, radial velocity, noise, and detection
-  probability; and
 - the measurement noise assumed by the baseline estimator.
 
 ### Motion speed

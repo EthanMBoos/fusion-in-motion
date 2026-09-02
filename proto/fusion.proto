@@ -103,19 +103,6 @@ message LidarScan {
   string association_mode = 3;
 }
 
-message RadarDetection {
-  string landmark_id = 1;
-  double range_m = 2;
-  double azimuth_rad = 3;
-  double radial_velocity_mps = 4;
-}
-
-message RadarScan {
-  RecordHeader header = 1;
-  repeated RadarDetection detections = 2;
-  string association_mode = 3;
-}
-
 message TruthState {
   sint64 truth_time_ns = 1;
   Pose pose_w_b = 2;
@@ -137,7 +124,6 @@ message ObservationTruth {
     ImuSample ideal_imu = 10;
     CameraFrame ideal_camera = 11;
     LidarScan ideal_lidar = 12;
-    RadarScan ideal_radar = 13;
   }
 }
 

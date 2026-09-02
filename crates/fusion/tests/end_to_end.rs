@@ -7,10 +7,6 @@ fn example() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/initial.yaml")
 }
 
-fn radar_example() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/with_radar.yaml")
-}
-
 #[test]
 fn generation_is_logically_deterministic() -> Result<()> {
     let scenario = scenario::load_and_resolve(&example())?;
@@ -30,9 +26,6 @@ fn generation_is_logically_deterministic() -> Result<()> {
                 assert_eq!(a, b)
             }
             (bundle::MeasurementRecord::Lidar(a), bundle::MeasurementRecord::Lidar(b)) => {
-                assert_eq!(a, b)
-            }
-            (bundle::MeasurementRecord::Radar(a), bundle::MeasurementRecord::Radar(b)) => {
                 assert_eq!(a, b)
             }
             _ => panic!("measurement type changed between deterministic runs"),
@@ -98,11 +91,6 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
             .iter()
             .any(|record| matches!(record, bundle::MeasurementRecord::Lidar(_)))
     );
-    assert!(
-        measurements
-            .iter()
-            .all(|record| !matches!(record, bundle::MeasurementRecord::Radar(_)))
-    );
     let truth = bundle::read_truth_states(&output.join("truth.mcap"))?;
     assert!(!truth.is_empty());
     assert!(!bundle::read_estimates(&output.join("estimates/baseline.mcap"))?.is_empty());
@@ -157,20 +145,6 @@ fn comparison_shows_metric_differences() -> Result<()> {
 
     let comparison = fusion_in_motion::compare::render(&baseline, &variant)?;
     assert!(comparison.contains("position RMSE (m)"));
-    Ok(())
-}
-
-#[test]
-fn radar_example_generates_radar_measurements() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&radar_example())?;
-    let generated = sensor::generate(&scenario)?;
-
-    assert!(
-        generated
-            .measurements
-            .iter()
-            .any(|record| matches!(record, bundle::MeasurementRecord::Radar(_)))
-    );
     Ok(())
 }
 

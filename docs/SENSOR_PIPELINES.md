@@ -4,11 +4,11 @@ Fusion results depend on more than the estimator equations. A technique can be
 mathematically appropriate and still perform poorly because measurements reach
 it late, arrive out of order, or are dropped under load.
 
-This matters when a platform carries high-throughput sensors such as cameras,
-lidars, and imaging radars. A 20 Hz lidar may publish several megabytes per
-scan, while multiple cameras publish images at 30 Hz or faster. The estimator
-may only need compact features from those sensors, but the system must first
-receive, move, decode, and preprocess the raw data.
+This matters when a platform carries high-throughput cameras and lidars. A 20
+Hz lidar may publish several megabytes per scan, while multiple cameras publish
+images at 30 Hz or faster. The estimator may only need compact features from
+those sensors, but the system must first receive, move, decode, and preprocess
+the raw data.
 
 The playground should make it possible to distinguish two failures:
 
@@ -33,7 +33,7 @@ ground truth
 sensor generation
     |
     v
-fixed camera, lidar, radar, and IMU workload
+fixed camera, lidar, and IMU workload
     |
     +---> shared single-thread pipeline
     +---> shared worker pool
@@ -53,7 +53,6 @@ A practical sensor-fusion system often resembles:
 ```text
 lidar receiver  -> lidar queue  -> point-cloud frontend --+
 camera receiver -> camera queue -> vision frontend --------+-> ordered fusion
-radar receiver  -> radar queue  -> radar frontend ----------+
 IMU receiver    -> priority queue --------------------------+
 ```
 
@@ -137,16 +136,15 @@ can wait until simpler experiments show that they matter.
 
 ## Raw payloads and fusion observations
 
-The current analytic camera, lidar, and radar messages are small. They resemble
-the observations that a perception frontend would hand to the estimator, not
-the large raw data that arrived from the sensor.
+The current analytic camera and lidar messages are small. They resemble the
+observations that a perception frontend would hand to the estimator, not the
+large raw data that arrived from the sensor.
 
 The pipeline experiment should make this boundary visible:
 
 ```text
 raw image       -> detection and association -> camera observation
 raw point cloud -> filtering and association -> lidar observation
-raw radar data  -> detection and tracking    -> radar observation
 ```
 
 Initially, a raw message can contain a synthetic byte buffer of a configured
