@@ -28,14 +28,14 @@ is supplied to the estimator.
 Run it with:
 
 ```sh
-fusion run examples/initial.yaml --output runs/initial --view
+fusion run examples/initial.yaml --view
 ```
 
 Radar is optional. The separate radar example adds analytic range, bearing,
 and radial-velocity detections:
 
 ```sh
-fusion run examples/with_radar.yaml --output runs/with-radar --view
+fusion run examples/with_radar.yaml --view
 ```
 
 ## Scenario settings
@@ -126,10 +126,8 @@ reports/baseline/visualization.rrd
 after estimation for scoring and visualization. The manifest records the
 scenario seed, software information, warnings, run status, and artifact hashes.
 
-Repeating a run with the same `run_id` replaces its existing output folder, so
-the initial example command can be rerun as-is. An output folder belonging to a
-different `run_id` is not overwritten; use a new output path for a different
-experiment.
+With no `--output`, each run uses the next free `runs/runNNN` folder. An
+explicit output path must be new. Existing runs are not replaced.
 
 ## Randomness
 

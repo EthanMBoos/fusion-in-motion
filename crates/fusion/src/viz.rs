@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fusion_schema::messages::{Pose, StateEstimate, TruthState};
+use fusion_schema::messages::{Pose, RecordHeader, StateEstimate, TruthState};
 
 use crate::{
     bundle::{self, MeasurementRecord},
@@ -81,15 +81,29 @@ pub fn write_bundle_visualization(
         .with_context(|| format!("failed to create Rerun recording {}", output.display()))?;
 
     let radar_guide = if has_radar {
-        "\n\n**Radar** — orange points encode range/bearing; arrows encode signed radial velocity."
+        "\n\n**Radar:** orange points show range and bearing. Arrows show signed radial velocity."
     } else {
         ""
     };
     rec.log_static(
+        "dashboard/setup",
+        &rerun::TextDocument::new(format!(
+            "# Scenario\n\n**Motion:** {:.2}x speed · {:.1} s simulated path\n\n**Camera:** {:.1} Hz · {:.1} ms latency\n\n**Lidar:** {:.1} Hz · {:.1} ms latency · {:.1} ms scan\n\n**Seed:** {}",
+            scenario.motion_speed_factor,
+            scenario.effective_duration_s(),
+            scenario.camera.rate_hz,
+            scenario.camera.latency_ns as f64 / 1.0e6,
+            scenario.lidar.rate_hz,
+            scenario.lidar.latency_ns as f64 / 1.0e6,
+            scenario.lidar.scan_duration_ns as f64 / 1.0e6,
+            scenario.root_seed,
+        )),
+    )?;
+    rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::new(
             format!(
-                "# Fusion in Motion\n\n**Map** — yellow landmarks, green truth, pink estimate. The two current-pose markers use different sizes so both remain visible when the estimate is accurate.\n\n**Camera** — equal-length cyan rays encode *bearing only*. Their length is deliberately meaningless.\n\n**Lidar** — blue points and rays encode measured range and bearing.{radar_guide}\n\nDrag the timeline below to inspect the same instant across every panel."
+                "# Dashboard\n\n**Map:** green truth and pink estimate.\n\n**Sensors:** camera rays show bearing only. Lidar points show range and bearing; color runs from early to late in the scan.{radar_guide}\n\n**Timing:** age is receipt time minus reported timestamp. Acquisition duration is the interval covered by one record.\n\n**Error:** the gray line is the divergence threshold. These plots show accuracy, not covariance consistency.\n\nDrag the timeline to inspect one time across all panels."
             ),
         ),
     )?;
@@ -97,9 +111,15 @@ pub fn write_bundle_visualization(
     log_series_styles(&rec, has_radar)?;
     log_static_map(&rec, &measurements, &truth, &estimates)?;
     log_sensor_references(&rec, &scenario)?;
+    log_motion_segments(&rec, &scenario)?;
     log_vehicle_motion(&rec, &truth, &estimates)?;
-    log_measurements(&rec, &measurements)?;
-    log_errors(&rec, &truth, &estimates)?;
+    log_measurements(&rec, &measurements, &truth)?;
+    log_errors(
+        &rec,
+        &truth,
+        &estimates,
+        scenario.metrics.divergence_position_error_m,
+    )?;
     send_dashboard_blueprint(&rec, has_radar)?;
     rec.flush_blocking()?;
     Ok(())
@@ -129,13 +149,36 @@ fn log_series_styles(rec: &rerun::RecordingStream, has_radar: bool) -> Result<()
             ESTIMATE_COLOR,
         ),
         ("plots/error/yaw_rad", "yaw error (rad)", RADAR_COLOR),
+        (
+            "plots/error/divergence_threshold_m",
+            "divergence threshold (m)",
+            REFERENCE_COLOR,
+        ),
         ("plots/imu/gyro_z_radps", "gyro z (rad/s)", CAMERA_COLOR),
         ("plots/imu/accel_x_mps2", "accel x (m/s²)", LIDAR_COLOR),
         ("plots/observations/camera", "camera features", CAMERA_COLOR),
         ("plots/observations/lidar", "lidar returns", LIDAR_COLOR),
+        ("plots/timing/imu_age_ms", "IMU age (ms)", REFERENCE_COLOR),
+        (
+            "plots/timing/camera_age_ms",
+            "camera age (ms)",
+            CAMERA_COLOR,
+        ),
+        ("plots/timing/lidar_age_ms", "lidar age (ms)", LIDAR_COLOR),
+        (
+            "plots/timing/lidar_acquisition_ms",
+            "lidar acquisition (ms)",
+            TRUTH_COLOR,
+        ),
+        (
+            "plots/timing/imu_acquisition_ms",
+            "IMU acquisition (ms)",
+            ESTIMATE_COLOR,
+        ),
     ];
     if has_radar {
         series.push(("plots/observations/radar", "radar detections", RADAR_COLOR));
+        series.push(("plots/timing/radar_age_ms", "radar age (ms)", RADAR_COLOR));
     }
     for (path, name, color) in series {
         let [r, g, b, _] = color.to_be_bytes();
@@ -307,6 +350,26 @@ fn log_vehicle_motion(
     Ok(())
 }
 
+fn log_motion_segments(rec: &rerun::RecordingStream, scenario: &ResolvedScenario) -> Result<()> {
+    let mut start_s = 0.0;
+    for (index, segment) in scenario.trajectory.iter().enumerate() {
+        rec.set_duration_secs("time", start_s / scenario.motion_speed_factor);
+        rec.log(
+            "dashboard/now",
+            &rerun::TextDocument::new(format!(
+                "# Motion\n\n**{}** ({}/{})\n\nAcceleration: {:.2} m/s² · yaw rate: {:.2} rad/s",
+                segment.id,
+                index + 1,
+                scenario.trajectory.len(),
+                segment.longitudinal_acceleration_mps2 * scenario.motion_speed_factor.powi(2),
+                segment.yaw_rate_radps * scenario.motion_speed_factor,
+            )),
+        )?;
+        start_s += segment.duration_s;
+    }
+    Ok(())
+}
+
 fn log_pose(
     rec: &rerun::RecordingStream,
     path: &str,
@@ -339,6 +402,7 @@ fn log_pose(
 fn log_measurements(
     rec: &rerun::RecordingStream,
     measurements: &[MeasurementRecord],
+    truth: &[TruthState],
 ) -> Result<()> {
     for measurement in measurements {
         match measurement {
@@ -349,6 +413,9 @@ fn log_measurements(
                     .as_ref()
                     .map_or(0, |header| header.reported_stamp_ns);
                 rec.set_duration_secs("time", seconds(time_ns));
+                if let Some(header) = sample.header.as_ref() {
+                    log_timing(rec, "imu", header)?;
+                }
                 if let Some(gyro) = sample.angular_rate_radps.as_ref() {
                     rec.log("plots/imu/gyro_z_radps", &rerun::Scalars::single(gyro.z))?;
                 }
@@ -362,6 +429,9 @@ fn log_measurements(
                     .as_ref()
                     .map_or(0, |header| header.reported_stamp_ns);
                 rec.set_duration_secs("time", seconds(time_ns));
+                if let Some(header) = frame.header.as_ref() {
+                    log_timing(rec, "camera", header)?;
+                }
                 let strips = frame
                     .features
                     .iter()
@@ -394,25 +464,34 @@ fn log_measurements(
                     continue;
                 };
                 rec.set_duration_secs("time", seconds(header.reported_stamp_ns));
+                log_timing(rec, "lidar", header)?;
                 let mut points = Vec::with_capacity(scan.returns.len());
                 let mut rays = Vec::with_capacity(scan.returns.len());
+                let mut colors = Vec::with_capacity(scan.returns.len());
                 for return_ in &scan.returns {
                     let endpoint = polar(return_.range_m, return_.azimuth_rad);
                     points.push(endpoint);
                     rays.push(vec![[0.0, 0.0], endpoint]);
+                    let fraction = if header.acquisition_duration_ns > 0 {
+                        return_.acquisition_offset_ns as f64 / header.acquisition_duration_ns as f64
+                    } else {
+                        1.0
+                    };
+                    colors.push(lidar_time_color(fraction));
                 }
                 rec.log(
                     "sensors/lidar/returns",
                     &rerun::Points2D::new(points)
-                        .with_colors([LIDAR_COLOR])
+                        .with_colors(colors.clone())
                         .with_radii([0.14]),
                 )?;
                 rec.log(
                     "sensors/lidar/rays",
                     &rerun::LineStrips2D::new(rays)
-                        .with_colors([LIDAR_COLOR])
+                        .with_colors(colors)
                         .with_radii([0.012]),
                 )?;
+                log_lidar_platform_motion(rec, truth, header)?;
                 rec.log(
                     "plots/observations/lidar",
                     &rerun::Scalars::single(scan.returns.len() as f64),
@@ -424,6 +503,9 @@ fn log_measurements(
                     .as_ref()
                     .map_or(0, |header| header.reported_stamp_ns);
                 rec.set_duration_secs("time", seconds(time_ns));
+                if let Some(header) = scan.header.as_ref() {
+                    log_timing(rec, "radar", header)?;
+                }
                 let mut points = Vec::with_capacity(scan.detections.len());
                 let mut vectors = Vec::with_capacity(scan.detections.len());
                 for detection in &scan.detections {
@@ -457,6 +539,65 @@ fn log_measurements(
     Ok(())
 }
 
+fn log_timing(rec: &rerun::RecordingStream, sensor: &str, header: &RecordHeader) -> Result<()> {
+    let age_ms = (header.receipt_time_ns - header.reported_stamp_ns) as f64 / 1.0e6;
+    rec.log(
+        format!("plots/timing/{sensor}_age_ms"),
+        &rerun::Scalars::single(age_ms),
+    )?;
+    if header.acquisition_duration_ns > 0 {
+        rec.log(
+            format!("plots/timing/{sensor}_acquisition_ms"),
+            &rerun::Scalars::single(header.acquisition_duration_ns as f64 / 1.0e6),
+        )?;
+    }
+    Ok(())
+}
+
+fn log_lidar_platform_motion(
+    rec: &rerun::RecordingStream,
+    truth: &[TruthState],
+    header: &RecordHeader,
+) -> Result<()> {
+    let start = header.reported_stamp_ns - header.acquisition_duration_ns;
+    let Some(end_state) = nearest_truth(truth, header.reported_stamp_ns) else {
+        return Ok(());
+    };
+    let Some(end_pose) = end_state.pose_w_b.as_ref() else {
+        return Ok(());
+    };
+    let Some(end_position) = end_pose.position.as_ref() else {
+        return Ok(());
+    };
+    let yaw = yaw_from_pose(end_pose);
+    let (sin, cos) = yaw.sin_cos();
+    let path = truth
+        .iter()
+        .filter(|state| (start..=header.reported_stamp_ns).contains(&state.truth_time_ns))
+        .filter_map(|state| state.pose_w_b.as_ref()?.position.as_ref())
+        .map(|position| {
+            let dx = position.x - end_position.x;
+            let dy = position.y - end_position.y;
+            [(cos * dx + sin * dy) as f32, (-sin * dx + cos * dy) as f32]
+        })
+        .collect::<Vec<_>>();
+    if path.len() >= 2 {
+        rec.log(
+            "sensors/lidar/platform_motion_during_scan",
+            &rerun::LineStrips2D::new([path])
+                .with_colors([TRUTH_COLOR])
+                .with_radii([0.05]),
+        )?;
+    }
+    Ok(())
+}
+
+fn lidar_time_color(fraction: f64) -> u32 {
+    let f = fraction.clamp(0.0, 1.0);
+    let mix = |early: f64, late: f64| (early + (late - early) * f).round() as u32;
+    (mix(35.0, 120.0) << 24) | (mix(75.0, 225.0) << 16) | (255 << 8) | 255
+}
+
 fn send_dashboard_blueprint(rec: &rerun::RecordingStream, has_radar: bool) -> Result<()> {
     use rerun::blueprint::{
         Blueprint, BlueprintActivation, BlueprintPanel, Grid, Horizontal, SelectionPanel,
@@ -465,9 +606,11 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream, has_radar: bool) -> Re
     };
 
     let overview = Spatial2DView::new("Map: truth vs estimate").with_origin("map");
-    let guide = TextDocumentView::new("What am I looking at?").with_origin("dashboard");
+    let setup = TextDocumentView::new("Scenario").with_origin("dashboard/setup");
+    let now = TextDocumentView::new("Motion").with_origin("dashboard/now");
+    let guide = TextDocumentView::new("Guide").with_origin("dashboard/guide");
     let camera_view = || {
-        Spatial2DView::new("Camera bearings — no depth")
+        Spatial2DView::new("Camera bearing (no depth)")
             .with_origin("sensors/camera")
             .into()
     };
@@ -488,19 +631,28 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream, has_radar: bool) -> Re
     } else {
         Grid::new([camera_view(), lidar_view()]).with_grid_columns(2)
     };
-    let plots = Horizontal::new([
+    let plots = Grid::new([
         TimeSeriesView::new("Estimation error")
             .with_origin("plots/error")
+            .into(),
+        TimeSeriesView::new("Measurement timing")
+            .with_origin("plots/timing")
             .into(),
         TimeSeriesView::new("IMU").with_origin("plots/imu").into(),
         TimeSeriesView::new("Observations per frame")
             .with_origin("plots/observations")
             .into(),
-    ]);
+    ])
+    .with_grid_columns(2);
     let root = Vertical::new([
-        Horizontal::new([overview.into(), guide.into()])
-            .with_column_shares(vec![4.0, 1.4])
-            .into(),
+        Horizontal::new([
+            overview.into(),
+            Vertical::new([setup.into(), now.into(), guide.into()])
+                .with_row_shares(vec![1.2, 0.7, 2.6])
+                .into(),
+        ])
+        .with_column_shares(vec![3.6, 1.7])
+        .into(),
         sensors.into(),
         plots.into(),
     ])
@@ -527,6 +679,7 @@ fn log_errors(
     rec: &rerun::RecordingStream,
     truth: &[TruthState],
     estimates: &[StateEstimate],
+    divergence_threshold_m: f64,
 ) -> Result<()> {
     for estimate in estimates {
         let (Some(estimate_pose), Some(truth_state)) = (
@@ -554,6 +707,10 @@ fn log_errors(
             &rerun::Scalars::single(position_error),
         )?;
         rec.log("plots/error/yaw_rad", &rerun::Scalars::single(yaw_error))?;
+        rec.log(
+            "plots/error/divergence_threshold_m",
+            &rerun::Scalars::single(divergence_threshold_m),
+        )?;
     }
     Ok(())
 }

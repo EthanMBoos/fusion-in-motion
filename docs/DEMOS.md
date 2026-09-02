@@ -9,6 +9,19 @@ analytic IMU/camera/lidar/radar measurements, explicit acquisition and receipt
 times, per-return lidar timing, hidden truth, MCAP/Protobuf bundles, a baseline
 EKF, parameter sweeps, scoring, and Rerun visualization.
 
+## Status
+
+| Demo | Status | Available now |
+| --- | --- | --- |
+| Current 2D demo | **Runnable** | IMU, camera, timed lidar, optional radar, dashboard, scoring, and sweeps |
+| 1. Accuracy vs consistency | Planned | Accuracy metrics exist; covariance consistency metrics and uncertainty plots do not |
+| 2. Delayed measurements | Planned | Latency and measurement age exist; discard and fixed-lag policies do not |
+| 3. Lidar scan timing | **Partly runnable** | Per-return time, scan color, and platform motion are visible; deskewed estimator comparison is not implemented |
+| 4–7. External estimators through 3D | Planned | The saved-bundle and external CSV scoring boundaries exist |
+
+Use [Start here](START_HERE.md) for the current demo. The numbered sections
+below are a roadmap.
+
 The demos below turn that core into evidence that the tool is useful.
 
 ## 1. Accurate is not the same as consistent

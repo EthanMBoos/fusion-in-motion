@@ -47,12 +47,10 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     let output = temp.path().join("run");
     fusion_in_motion::run_experiment(&example(), &output)?;
 
-    let stale_artifact = output.join("stale-artifact");
-    fs::write(&stale_artifact, "removed when the same run is repeated")?;
-    fusion_in_motion::run_experiment(&example(), &output)?;
+    let repeated = fusion_in_motion::run_experiment(&example(), &output);
     assert!(
-        !stale_artifact.exists(),
-        "rerunning the same experiment should replace its output bundle"
+        repeated.is_err(),
+        "an existing run folder should never be replaced"
     );
 
     for relative in [
@@ -76,6 +74,9 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
             .is_some()
     );
     assert!(fs::metadata(output.join("reports/baseline/visualization.rrd"))?.len() > 100);
+    let summary = fs::read_to_string(output.join("reports/baseline/summary.md"))?;
+    assert!(summary.contains("Covariance consistency"));
+    assert!(summary.contains("Outputs above the 5.0 m divergence limit"));
     let measurements = bundle::read_measurements(&output.join("measurements.mcap"))?;
     assert!(
         measurements
@@ -126,6 +127,36 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     assert!(external_metrics.yaw_rmse_rad < 1.0e-12);
     assert!(output.join("estimates/perfect-csv.mcap").is_file());
     assert!(output.join("reports/perfect-csv/summary.md").is_file());
+    Ok(())
+}
+
+#[test]
+fn numbered_runs_choose_the_first_free_folder() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    fs::create_dir(temp.path().join("run001"))?;
+    fs::create_dir(temp.path().join("run002"))?;
+    assert_eq!(
+        fusion_in_motion::next_run_path(temp.path()),
+        temp.path().join("run003")
+    );
+    Ok(())
+}
+
+#[test]
+fn comparison_shows_metric_differences() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let baseline = temp.path().join("run001");
+    let variant = temp.path().join("run002");
+    fusion_in_motion::run_experiment(&example(), &baseline)?;
+
+    let variant_scenario = temp.path().join("variant.yaml");
+    let source = fs::read_to_string(example())?
+        .replace("motion_speed_factor: 1.0", "motion_speed_factor: 2.0");
+    fs::write(&variant_scenario, source)?;
+    fusion_in_motion::run_experiment(&variant_scenario, &variant)?;
+
+    let comparison = fusion_in_motion::compare::render(&baseline, &variant)?;
+    assert!(comparison.contains("position RMSE (m)"));
     Ok(())
 }
 

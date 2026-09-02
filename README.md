@@ -12,6 +12,10 @@ bearings, and timed lidar returns. A small EKF is included as a working
 baseline. Change the platform speed, sensor rates, latency, noise, or missed
 detections to see how the estimate responds.
 
+Start with [three guided experiments](docs/START_HERE.md): run the baseline,
+read the dashboard, then change speed, camera latency, and lidar scan duration
+one at a time.
+
 The longer-term goal includes testing the path from larger sensor payloads to
 the estimator. That makes it possible to separate a bad fusion technique from
 a system that cannot move, preprocess, and deliver its measurements quickly
@@ -35,12 +39,11 @@ Complete the [installation guide](docs/INSTALL.md), then run this from the
 repository root:
 
 ```sh
-fusion run examples/initial.yaml --output runs/initial --view
+fusion run examples/initial.yaml --view
 ```
 
-You can run the same command again at any time. Fusion replaces the existing
-`runs/initial` bundle because it belongs to the same `run_id`; it will not
-overwrite that directory if it belongs to a different experiment.
+Each run gets the next free folder: `runs/run001`, `runs/run002`, and so on.
+`--output` selects a different new folder. Existing folders are not replaced.
 
 Rerun opens a looping dashboard with the true and estimated path, ego-centric
 camera and lidar views, estimation error, IMU data, and observation counts. The

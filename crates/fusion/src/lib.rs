@@ -1,4 +1,5 @@
 pub mod bundle;
+pub mod compare;
 pub mod estimator;
 pub mod eval;
 pub mod external;
@@ -32,6 +33,26 @@ pub fn run_experiment(scenario_path: &Path, output: &Path) -> Result<PathBuf> {
     Ok(output.to_path_buf())
 }
 
+/// Run a scenario in an explicit folder or the next free `runs/runNNN` folder.
+pub fn run_numbered_experiment(scenario_path: &Path, output: Option<&Path>) -> Result<PathBuf> {
+    let output = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| next_run_path(Path::new("runs")));
+    let scenario = resolve_scenario(scenario_path)?;
+    run_resolved_experiment(&scenario, scenario_path, &output, true)?;
+    Ok(output)
+}
+
+pub fn next_run_path(root: &Path) -> PathBuf {
+    for number in 1_u64.. {
+        let candidate = root.join(format!("run{number:03}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("run number overflow")
+}
+
 pub(crate) fn run_resolved_experiment(
     scenario: &ResolvedScenario,
     scenario_path: &Path,
@@ -59,7 +80,7 @@ pub(crate) fn run_resolved_experiment(
         let replayed_truth = bundle::read_truth_states(&output.join("truth.mcap"))?;
         let replayed_estimates = bundle::read_estimates(&output.join("estimates/baseline.mcap"))?;
         let metrics = evaluate(&replayed_truth, &replayed_estimates, &scenario.metrics)?;
-        bundle::write_reports(output, &metrics)?;
+        bundle::write_reports(output, &metrics, scenario)?;
         if build_visualization {
             viz::write_bundle_visualization(
                 output,

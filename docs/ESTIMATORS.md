@@ -32,7 +32,7 @@ estimate_time_ns,emission_time_ns,x_m,y_m,yaw_rad,vx_mps,vy_mps,status
 Score it with:
 
 ```sh
-fusion score runs/initial my-estimates.csv --id my-filter
+fusion score runs/run001 my-estimates.csv --id my-filter
 ```
 
 This writes `estimates/my-filter.mcap` and a report under
@@ -42,7 +42,7 @@ command opens truth only after the estimate CSV exists.
 Open the synchronized dashboard with the imported estimate:
 
 ```sh
-fusion view runs/initial --estimator my-filter
+fusion view runs/run001 --estimator my-filter
 ```
 
 Availability currently assumes an output cadence comparable to the IMU/truth

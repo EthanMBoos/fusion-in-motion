@@ -172,30 +172,11 @@ impl BundleManifest {
 }
 
 pub fn prepare(output: &Path, scenario: &ResolvedScenario) -> Result<()> {
-    if output.exists() {
-        let existing_scenario_path = output.join("scenario.resolved.yaml");
-        let existing_scenario = crate::scenario::load_and_resolve(&existing_scenario_path)
-            .with_context(|| {
-                format!(
-                    "output directory {} already exists but is not a reusable experiment bundle",
-                    output.display()
-                )
-            })?;
-        if existing_scenario.run_id != scenario.run_id {
-            bail!(
-                "output directory {} belongs to run {}; choose a new directory for run {}",
-                output.display(),
-                existing_scenario.run_id,
-                scenario.run_id
-            );
-        }
-        fs::remove_dir_all(output).with_context(|| {
-            format!(
-                "failed to replace existing output directory {}",
-                output.display()
-            )
-        })?;
-    }
+    anyhow::ensure!(
+        !output.exists(),
+        "run directory {} already exists; omit --output to create the next numbered run",
+        output.display()
+    );
     fs::create_dir_all(output.join("estimates"))?;
     fs::create_dir_all(output.join("reports/baseline"))?;
     fs::write(
@@ -327,8 +308,49 @@ pub fn read_estimates(path: &Path) -> Result<Vec<StateEstimate>> {
     Ok(estimates)
 }
 
-pub fn write_reports(output: &Path, metrics: &Metrics) -> Result<()> {
-    write_named_reports(output, "baseline", metrics)
+pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenario) -> Result<()> {
+    write_named_reports(output, "baseline", metrics)?;
+    let report_dir = output.join("reports/baseline");
+    let summary = format!(
+        "# Results\n\n## Scenario\n\n\
+         - Motion speed: {:.2}x\n\
+         - Camera: {:.1} Hz, {:.1} ms latency, {:.0}% detection probability\n\
+         - Lidar: {:.1} Hz, {:.1} ms latency, {:.1} ms scan duration\n\
+         - Random seed: {}\n\n\
+         ## Result\n\n\
+         - Position RMSE: {:.3} m (position error over the run)\n\
+         - Yaw RMSE: {:.3} rad (heading error over the run)\n\
+         - Final position error: {:.3} m\n\
+         - Maximum position error: {:.3} m\n\
+         - Availability: {:.1}% (valid outputs at the expected output cadence)\n\
+         - Outputs above the {:.1} m divergence limit: {}\n\
+         - Time coverage: {:.1}%\n\n\
+         ## Limits\n\n\
+         These are accuracy metrics. Covariance consistency and confidence calibration are not evaluated.\n\n\
+         ## Commands\n\n\
+         - `fusion view {}`\n\
+         - `fusion compare <baseline-run> {}`\n",
+        scenario.motion_speed_factor,
+        scenario.camera.rate_hz,
+        scenario.camera.latency_ns as f64 / 1.0e6,
+        scenario.camera.detection_probability * 100.0,
+        scenario.lidar.rate_hz,
+        scenario.lidar.latency_ns as f64 / 1.0e6,
+        scenario.lidar.scan_duration_ns as f64 / 1.0e6,
+        scenario.root_seed,
+        metrics.position_rmse_m,
+        metrics.yaw_rmse_rad,
+        metrics.final_position_error_m,
+        metrics.maximum_position_error_m,
+        metrics.availability_fraction * 100.0,
+        scenario.metrics.divergence_position_error_m,
+        metrics.diverged_output_count,
+        metrics.time_coverage_fraction * 100.0,
+        output.display(),
+        output.display(),
+    );
+    fs::write(report_dir.join("summary.md"), summary)?;
+    Ok(())
 }
 
 pub fn write_named_reports(output: &Path, name: &str, metrics: &Metrics) -> Result<()> {

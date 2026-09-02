@@ -1,6 +1,8 @@
+# Beginner exercises are marked below. See docs/START_HERE.md.
 format_version: 1
 run_id: initial-sensor-fusion-seed-20260823
 duration_s: 16.0
+# EXPERIMENT 1: try 2.0 and 4.0. The path stays fixed.
 motion_speed_factor: 1.0
 local_epoch: synthetic-enu
 root_seed: 20260823
@@ -87,6 +89,7 @@ camera:
   instance_id: camera.primary
   frame: body
   rate_hz: 10.0
+  # EXPERIMENT 2: try 500000000 (500 ms).
   latency_ns: 18000000
   horizontal_fov_rad: 2.4
   max_range_m: 20.0
@@ -100,6 +103,7 @@ lidar:
   latency_ns: 32000000
   horizontal_fov_rad: 6.283185307179586
   max_range_m: 24.0
+  # EXPERIMENT 3: try 400000000 (400 ms).
   scan_duration_ns: 80000000
   range_noise_stddev_m: 0.025
   bearing_noise_stddev_rad: 0.002

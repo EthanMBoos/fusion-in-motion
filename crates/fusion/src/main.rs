@@ -16,17 +16,19 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Check a scenario and print its resolved form.
-    #[command(hide = true)]
     Check { scenario: PathBuf },
     /// Run generation, baseline estimation, and evaluation.
     Run {
         scenario: PathBuf,
+        /// Run folder. Defaults to the next free runs/runNNN directory.
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Open the completed experiment in Rerun.
         #[arg(long)]
         view: bool,
     },
+    /// Compare metrics from two completed runs.
+    Compare { baseline: PathBuf, variant: PathBuf },
     /// Run a grid of scenario parameters and seeds, then aggregate the results.
     Sweep {
         sweep: PathBuf,
@@ -70,21 +72,24 @@ fn main() -> Result<()> {
             output,
             view,
         } => {
-            let bundle = fusion_in_motion::run_experiment(&scenario, &output)?;
-            println!("experiment complete: {}", bundle.display());
+            let bundle = fusion_in_motion::run_numbered_experiment(&scenario, output.as_deref())?;
+            println!("Run complete: {}", bundle.display());
+            println!("View:    fusion view {}", bundle.display());
             println!(
-                "report: {}",
+                "Report:  {}",
                 bundle.join("reports/baseline/summary.md").display()
-            );
-            println!(
-                "visualization: {}",
-                fusion_in_motion::viz::default_visualization_path(&bundle).display()
             );
             if view {
                 fusion_in_motion::viz::open_in_viewer(
                     &fusion_in_motion::viz::default_visualization_path(&bundle),
                 )?;
             }
+        }
+        Command::Compare { baseline, variant } => {
+            print!(
+                "{}",
+                fusion_in_motion::compare::render(&baseline, &variant)?
+            );
         }
         Command::Sweep { sweep, output } => {
             let report = fusion_in_motion::sweep::run(&sweep, &output)?;

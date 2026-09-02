@@ -1,0 +1,8 @@
+name: Beginner speed comparison
+base_scenario: initial.yaml
+
+# Repeat each speed with three seeds.
+seeds: [1, 2, 3]
+
+parameters:
+  motion_speed_factor: [1.0, 2.0, 4.0]
