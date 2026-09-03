@@ -62,6 +62,9 @@ images or dense point clouds. Landmark association is supplied to the
 estimator. This keeps the first example understandable while exercising sensor
 timing, noise, motion, replay, estimation, scoring, and visualization.
 
+[Simulation profiles](docs/PROFILES.md) defines the current planar model and
+the boundary for a future SE(3) profile.
+
 These experiments characterize the configured model. They are not claims
 about the performance of a physical sensor or a production runtime.
 

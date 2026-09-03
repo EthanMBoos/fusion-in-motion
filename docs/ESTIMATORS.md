@@ -4,6 +4,9 @@ An estimator can run in any language or process. Give it a run's
 `measurements.mcap`, export its planar estimates as CSV, and ask Fusion in
 Motion to score the result against the hidden truth.
 
+See [Simulation profiles](PROFILES.md) for the planar API: frames, sensors,
+state, and covariance.
+
 The MCAP records are delivered in receipt order. Each Protobuf `RecordHeader`
 contains `reported_stamp_ns` for acquisition time and `receipt_time_ns` for
 arrival time. Interval measurements also carry `acquisition_duration_ns`; each
