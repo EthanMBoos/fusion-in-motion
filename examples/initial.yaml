@@ -100,11 +100,11 @@ lidar:
   instance_id: lidar.primary
   frame: body
   rate_hz: 5.0
-  latency_ns: 32000000
+  latency_ns: 0
   horizontal_fov_rad: 6.283185307179586
   max_range_m: 24.0
-  # EXPERIMENT 3: try 400000000 (400 ms).
-  scan_duration_ns: 80000000
+  # EXPERIMENT 3: try 80000000 (80 ms), then 400000000 (400 ms).
+  scan_duration_ns: 0
   range_noise_stddev_m: 0.025
   bearing_noise_stddev_rad: 0.002
   detection_probability: 0.98

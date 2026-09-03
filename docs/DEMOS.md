@@ -44,6 +44,10 @@ matching truth. The dashboard plots position and yaw error with reported 95%
 uncertainty. The position line is the outer radius of the 2D covariance ellipse;
 the yaw line is the marginal 95% bound.
 
+The starter scenario uses an instantaneous, zero-latency lidar scan for this
+experiment. Turn on lidar latency or scan duration in the later timing demos;
+the baseline does not yet compensate either effect.
+
 ### What it demonstrates
 
 Two estimates can have similar trajectory error while one is badly

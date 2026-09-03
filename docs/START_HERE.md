@@ -24,7 +24,7 @@ The guide uses these fields:
 | --- | --- | ---: | ---: |
 | Faster motion | `motion_speed_factor` | `1.0` | `2.0` |
 | Late camera data | `camera.latency_ns` | `18000000` | `500000000` |
-| Longer lidar scan | `lidar.scan_duration_ns` | `80000000` | `400000000` |
+| Timed lidar scan | `lidar.scan_duration_ns` | `0` | `80000000` |
 
 Timing fields are in nanoseconds. One millisecond is 1,000,000 ns. One second
 is 1,000,000,000 ns.
@@ -60,7 +60,9 @@ visualization.
 
 - Camera rays show bearing only. Ray length does not represent depth.
 - Lidar returns show range and bearing. Color runs from early to late within
-  the scan. The green line shows platform motion during that scan.
+  the scan. The green line shows platform motion during that scan. The baseline
+  scan is instantaneous, so its returns share one acquisition time; Experiment
+  3 turns scan timing on.
 - The observation plot counts camera features and lidar returns.
 
 ### Timing
@@ -135,7 +137,7 @@ Reset camera latency to `18000000`. Then change:
 
 ```yaml
 lidar:
-  scan_duration_ns: 400000000  # 400 ms
+  scan_duration_ns: 80000000  # 80 ms
 ```
 
 Run again. Scrub through a turn in the lidar panel. The return colors show when
@@ -149,8 +151,8 @@ fusion compare runs/run001 runs/run004
 fusion view runs/run004
 ```
 
-After running each variable alone, try `scan_duration_ns: 400000000` with
-`motion_speed_factor: 4.0`.
+Then try `scan_duration_ns: 400000000`. After running each variable alone, use
+that 400 ms scan with `motion_speed_factor: 4.0`.
 
 ## Compare and repeat
 
