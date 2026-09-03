@@ -15,8 +15,8 @@ EKF, parameter sweeps, scoring, and Rerun visualization.
 | --- | --- | --- |
 | Current 2D demo | **Runnable** | IMU, camera, timed lidar, dashboard, scoring, and sweeps |
 | 1. Accuracy vs consistency | **Runnable** | Covariance validation, ANEES, marginal coverage, paired-seed sweep output, and uncertainty plots |
-| 2. Delayed measurements | Planned | Latency and measurement age exist; discard and fixed-lag policies do not |
-| 3. Lidar scan timing | **Partly runnable** | Per-return time, scan color, and platform motion are visible; deskewed estimator comparison is not implemented |
+| 2. Delayed measurements | **Runnable** | Compare arrival-time updates with bounded fixed-lag replay and stale-data discard |
+| 3. Lidar scan timing | **Runnable** | Compare instantaneous scans with estimated-motion deskew using per-return time |
 | 4–7. External estimators through 3D | Planned | The saved-bundle and external CSV scoring boundaries exist |
 
 Use [Start here](START_HERE.md) for the current demo. The numbered sections
@@ -45,8 +45,8 @@ uncertainty. The position line is the outer radius of the 2D covariance ellipse;
 the yaw line is the marginal 95% bound.
 
 The starter scenario uses an instantaneous, zero-latency lidar scan for this
-experiment. Turn on lidar latency or scan duration in the later timing demos;
-the baseline does not yet compensate either effect.
+experiment. The timing demos turn on lidar latency or scan duration and compare
+the compensated and uncompensated EKF paths.
 
 ### What it demonstrates
 
@@ -73,20 +73,23 @@ The next demo covers what happens when valid measurements arrive late.
 
 ## 2. Delayed measurements need state history
 
-The measurement bundle is already ordered by receipt time and preserves the
-original acquisition time. The current EKF applies delayed camera and lidar
-observations to its current state.
+The measurement bundle is ordered by receipt time and preserves acquisition
+time. Set `estimator.timing_compensation` to compare two paths:
 
-Compare three policies:
+1. `false`: apply the measurement to the state that exists when it arrives;
+2. `true`: accept it inside `estimator.history_duration_ns`, update at
+   acquisition time, and propagate the correction forward; observations older
+   than the history are discarded.
 
-1. apply the measurement immediately to the current state;
-2. discard measurements older than a configured limit; and
-3. restore the state at acquisition time, apply the update, and repropagate to
-   the present inside a fixed-lag window.
+Run the paired camera-latency and lidar-duration grid with:
 
-Sweep sensor latency and latency jitter while keeping all sensor draws paired.
-Plot trajectory error, consistency, measurement age, discarded measurements,
-revisions, and processing cost.
+```sh
+fusion sweep examples/timing_sweep.yaml --output runs/timing-sweep
+```
+
+Sweep sensor latency while keeping all sensor draws paired.
+Plot trajectory error, consistency, and measurement age. The run report records
+replayed and discarded measurements plus revised estimates.
 
 ### What it demonstrates
 
@@ -103,24 +106,25 @@ information.
   [Graph-MSF](https://github.com/leggedrobotics/graph_msf) show why revisable
   smoothing windows coexist with high-rate propagated estimates.
 
-### What this adds
+### What this provides
 
-- a bounded state and IMU history;
+- a bounded late-measurement acceptance window;
 - fixed-lag repropagation and revised estimates;
-- explicit causal, fixed-lag, and offline estimator labels; and
-- latency and revision metrics.
+- an explicit compensated or arrival-time estimator label; and
+- latency, discard, and revision counts.
 
 The same state-history mechanism can now correct measurements acquired across
 an interval rather than at one timestamp.
 
 ## 3. One lidar scan is many poses
 
-Fusion in Motion already generates lidar returns with acquisition offsets
-inside a scan. Compare:
+Fusion in Motion generates lidar returns with acquisition offsets inside a
+scan. `estimator.timing_compensation` selects between:
 
 - an uncompensated estimator that treats the complete scan as instantaneous;
   and
-- a time-aware estimator that evaluates each return at its acquisition time.
+- a time-aware estimator that uses interpolated EKF poses to transform every
+  return into the scan-end frame before the update.
 
 Sweep platform speed, yaw rate, lidar rate, and scan duration. In Rerun, show
 the platform motion during the scan and the compensated and uncompensated
@@ -140,11 +144,11 @@ Continuous-time estimation work by [Furgale, Barfoot, and
 Sibley](https://doi.org/10.1109/ICRA.2012.6225005) provides the broader basis for
 querying platform state at heterogeneous acquisition times.
 
-### What this adds
+### What this provides
 
 - a reusable per-element acquisition-time interface;
 - interpolation across the state history; and
-- visualization of interval observations.
+- visualization and report counts for interval observations.
 
 This timing model is also the basis for rolling-shutter cameras and recorded
 video playback later in the sequence.

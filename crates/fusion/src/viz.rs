@@ -85,7 +85,7 @@ pub fn write_bundle_visualization(
     rec.log_static(
         "dashboard/setup",
         &rerun::TextDocument::from_markdown(format!(
-            "**Path:** {:.2}x speed · {:.1} s  \n**Camera:** {:.1} Hz · {:.1} ms latency  \n**Lidar:** {:.1} Hz · {:.1} ms latency · {:.1} ms scan  \n**Seed:** {}",
+            "**Path:** {:.2}x speed · {:.1} s  \n**Camera:** {:.1} Hz · {:.1} ms latency  \n**Lidar:** {:.1} Hz · {:.1} ms latency · {:.1} ms scan  \n**Timing compensation:** {} · {:.0} ms history  \n**Seed:** {}",
             scenario.motion_speed_factor,
             scenario.effective_duration_s(),
             scenario.camera.rate_hz,
@@ -93,6 +93,12 @@ pub fn write_bundle_visualization(
             scenario.lidar.rate_hz,
             scenario.lidar.latency_ns as f64 / 1.0e6,
             scenario.lidar.scan_duration_ns as f64 / 1.0e6,
+            if scenario.estimator.timing_compensation {
+                "on"
+            } else {
+                "off"
+            },
+            scenario.estimator.history_duration_ns as f64 / 1.0e6,
             scenario.root_seed,
         )),
     )?;

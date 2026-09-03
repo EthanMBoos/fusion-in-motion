@@ -1,7 +1,8 @@
 # Start here
 
 This walkthrough takes about 45 minutes. Run the baseline, read the dashboard,
-then change speed, camera latency, and lidar scan duration one at a time.
+then change speed, camera latency, lidar scan duration, and estimator timing
+compensation.
 
 The first demo is 2D. The platform is a ground robot on a planar landmark map.
 It covers propagation, partial observations, sensor rate, latency, acquisition
@@ -25,6 +26,7 @@ The guide uses these fields:
 | Faster motion | `motion_speed_factor` | `1.0` | `2.0` |
 | Late camera data | `camera.latency_ns` | `18000000` | `500000000` |
 | Timed lidar scan | `lidar.scan_duration_ns` | `0` | `80000000` |
+| Timing handling | `estimator.timing_compensation` | `true` | `false` |
 
 Timing fields are in nanoseconds. One millisecond is 1,000,000 ns. One second
 is 1,000,000,000 ns.
@@ -38,9 +40,8 @@ fusion run runs/my_first_experiment.yaml
 Fusion prints the run directory. New runs use the next free name under
 `runs/`: `run001`, `run002`, and so on. Existing directories are not replaced.
 
-The commands below assume this is a fresh `runs/` directory, so the baseline is
-`runs/run001` and the three experiments are `run002` through `run004`. Use the
-directories printed by `fusion run` if other runs already exist.
+The commands below assume this is a fresh `runs/` directory. Use the directories
+printed by `fusion run` if other runs already exist.
 
 ```sh
 fusion view runs/run001
@@ -72,6 +73,12 @@ visualization.
 
 Latency means an observation is already old when the estimator receives it. A
 lidar scan can also cover more than one platform pose.
+
+The reference EKF accepts observations up to one second late. With
+`timing_compensation: true`, it applies them at acquisition time, propagates the
+correction forward, and deskews lidar returns using its estimated motion.
+Measurements that need more history than the configured window are discarded.
+The run report records replay, discard, revision, and deskew counts.
 
 ### Error
 
@@ -119,7 +126,9 @@ camera:
   latency_ns: 500000000  # 500 ms
 ```
 
-Run again and compare with the baseline. Check camera age in the timing plot.
+Leave `estimator.timing_compensation: true`, run again, and check camera age in
+the timing plot. The estimate should remain close because 500 ms fits inside
+the one-second history.
 
 ```sh
 fusion check runs/my_first_experiment.yaml > /dev/null
@@ -128,12 +137,26 @@ fusion compare runs/run001 runs/run003
 fusion view runs/run003
 ```
 
-The baseline applies delayed camera observations to its current state. It does
-not rewind the state, apply the old observation, and propagate forward again.
+Now change:
+
+```yaml
+estimator:
+  timing_compensation: false
+```
+
+Run once more. The uncompensated EKF applies the old camera bearing to the state
+that exists when it arrives.
+
+```sh
+fusion run runs/my_first_experiment.yaml
+fusion compare runs/run003 runs/run004
+fusion view runs/run004
+```
 
 ## Experiment 3: lidar scan duration
 
-Reset camera latency to `18000000`. Then change:
+Reset camera latency to `18000000`, restore
+`estimator.timing_compensation: true`, then change:
 
 ```yaml
 lidar:
@@ -147,19 +170,30 @@ the scan was collected.
 ```sh
 fusion check runs/my_first_experiment.yaml > /dev/null
 fusion run runs/my_first_experiment.yaml
-fusion compare runs/run001 runs/run004
-fusion view runs/run004
+fusion compare runs/run001 runs/run005
+fusion view runs/run005
+```
+
+Set `estimator.timing_compensation: false` and run the same scan again. The raw
+lidar panel is unchanged, but the uncompensated estimate treats every return as
+if it were acquired at the scan timestamp.
+
+```sh
+fusion run runs/my_first_experiment.yaml
+fusion compare runs/run005 runs/run006
+fusion view runs/run006
 ```
 
 Then try `scan_duration_ns: 400000000`. After running each variable alone, use
-that 400 ms scan with `motion_speed_factor: 4.0`.
+that 400 ms scan with `motion_speed_factor: 4.0`. Keep the one-second history
+when compensation is enabled.
 
 ## Compare and repeat
 
 Compare metrics:
 
 ```sh
-fusion compare runs/run001 runs/run004
+fusion compare runs/run005 runs/run006
 ```
 
 Compare the full resolved scenarios:

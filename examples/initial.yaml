@@ -113,6 +113,9 @@ estimator:
   id: baseline-camera-lidar-ekf
   output_world_frame: world_enu
   output_body_frame: body
+  # Set false to apply observations to the state that exists when they arrive.
+  timing_compensation: true
+  history_duration_ns: 1000000000
   camera_bearing_stddev_rad: 0.008
   lidar_range_stddev_m: 0.04
   lidar_bearing_stddev_rad: 0.004

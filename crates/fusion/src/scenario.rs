@@ -127,6 +127,8 @@ pub struct EstimatorConfig {
     pub id: String,
     pub output_world_frame: String,
     pub output_body_frame: String,
+    pub timing_compensation: bool,
+    pub history_duration_ns: i64,
     pub camera_bearing_stddev_rad: f64,
     pub lidar_range_stddev_m: f64,
     pub lidar_bearing_stddev_rad: f64,
@@ -320,6 +322,16 @@ fn validate_estimator(s: &ResolvedScenario) -> Result<()> {
             && s.estimator.output_body_frame == s.platform.body_frame,
         "estimator output frames must match the platform frames"
     );
+    ensure!(
+        s.estimator.history_duration_ns >= 0,
+        "estimator history duration must be nonnegative"
+    );
+    if s.estimator.timing_compensation {
+        ensure!(
+            s.estimator.history_duration_ns > 0,
+            "timing compensation requires a positive estimator history duration"
+        );
+    }
     for (name, value) in [
         (
             "estimator camera bearing standard deviation",

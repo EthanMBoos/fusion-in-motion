@@ -45,7 +45,17 @@ Useful settings include:
 - sensor rate, range, field of view, and latency;
 - IMU noise, bias, saturation, and quantization;
 - camera and lidar noise and detection probability;
+- `estimator.timing_compensation`, which selects fixed-lag replay and lidar
+  deskew instead of arrival-time updates;
+- `estimator.history_duration_ns`, which sets the retained history and the
+  oldest observation the reference EKF can revise;
 - the measurement noise assumed by the baseline estimator.
+
+Timing compensation is enabled in `examples/initial.yaml`. Disable it to keep
+the same measurements while applying delayed observations to the current state
+and treating each lidar scan as instantaneous. The run report writes the
+selected mode and its replay, discard, revision, and deskew counts to
+`reports/baseline/timing.json`.
 
 ### Motion speed
 
@@ -78,6 +88,9 @@ Run a sweep with:
 fusion sweep examples/speed_sensor_sweep.yaml --output runs/speed-sensor-sweep
 ```
 
+`examples/timing_sweep.yaml` compares the compensated and arrival-time EKF
+with paired camera-latency and lidar-duration cases.
+
 Dotted paths refer directly to scenario fields. Sequence indices are also
 accepted, for example `trajectory.3.yaw_rate_radps`. Sweeps are capped at 10,000
 cases to catch accidentally enormous grids.
@@ -109,6 +122,7 @@ measurements.mcap
 truth.mcap
 estimates/baseline.mcap
 reports/baseline/metrics.json
+reports/baseline/timing.json
 reports/baseline/summary.md
 reports/baseline/visualization.rrd
 ```

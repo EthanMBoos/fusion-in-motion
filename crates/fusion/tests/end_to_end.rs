@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::Result;
-use fusion_in_motion::{bundle, math, scenario, sensor, sweep};
+use fusion_in_motion::{bundle, estimator, eval, math, scenario, sensor, sweep};
 
 fn example() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/initial.yaml")
@@ -53,6 +53,7 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
         "truth.mcap",
         "estimates/baseline.mcap",
         "reports/baseline/metrics.json",
+        "reports/baseline/timing.json",
         "reports/baseline/summary.md",
         "reports/baseline/visualization.rrd",
     ] {
@@ -74,6 +75,9 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     let metrics: fusion_in_motion::eval::Metrics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/metrics.json"))?)?;
     assert!(metrics.covariance_consistency.is_some());
+    let timing: estimator::TimingDiagnostics =
+        serde_json::from_slice(&fs::read(output.join("reports/baseline/timing.json"))?)?;
+    assert!(timing.timing_compensation);
     let measurements = bundle::read_measurements(&output.join("measurements.mcap"))?;
     assert!(
         measurements
@@ -120,6 +124,55 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     assert!(external_metrics.covariance_consistency.is_none());
     assert!(output.join("estimates/perfect-csv.mcap").is_file());
     assert!(output.join("reports/perfect-csv/summary.md").is_file());
+    Ok(())
+}
+
+#[test]
+fn timing_compensation_recovers_delayed_and_scanned_measurements() -> Result<()> {
+    let mut scenario = scenario::load_and_resolve(&example())?;
+    scenario.motion_speed_factor = 2.0;
+    scenario.camera.latency_ns = 500_000_000;
+    scenario.lidar.scan_duration_ns = 400_000_000;
+    let generated = sensor::generate(&scenario)?;
+
+    let mut uncompensated_config = scenario.estimator.clone();
+    uncompensated_config.timing_compensation = false;
+    let uncompensated = estimator::run_baseline(&uncompensated_config, &generated.measurements)?;
+    let uncompensated_metrics = eval::evaluate(
+        &generated.truth_states,
+        &uncompensated.estimates,
+        &scenario.metrics,
+    )?;
+
+    let compensated = estimator::run_baseline(&scenario.estimator, &generated.measurements)?;
+    let compensated_metrics = eval::evaluate(
+        &generated.truth_states,
+        &compensated.estimates,
+        &scenario.metrics,
+    )?;
+
+    assert!(uncompensated.timing.delayed_measurements > 0);
+    assert_eq!(uncompensated.timing.replayed_measurements, 0);
+    assert_eq!(uncompensated.timing.revised_estimates, 0);
+    assert_eq!(uncompensated.timing.deskewed_lidar_scans, 0);
+    assert!(compensated.timing.replayed_measurements > 0);
+    assert!(compensated.timing.deskewed_lidar_scans > 0);
+    assert!(compensated.timing.revised_estimates > 0);
+    assert_eq!(compensated.timing.discarded_measurements, 0);
+    assert!(compensated_metrics.position_rmse_m < uncompensated_metrics.position_rmse_m * 0.2);
+    Ok(())
+}
+
+#[test]
+fn fixed_lag_discards_measurements_older_than_its_history() -> Result<()> {
+    let mut scenario = scenario::load_and_resolve(&example())?;
+    scenario.camera.latency_ns = 500_000_000;
+    scenario.estimator.history_duration_ns = 100_000_000;
+    let generated = sensor::generate(&scenario)?;
+    let run = estimator::run_baseline(&scenario.estimator, &generated.measurements)?;
+
+    assert!(run.timing.discarded_measurements > 0);
+    assert!(run.timing.delayed_measurements > run.timing.replayed_measurements);
     Ok(())
 }
 

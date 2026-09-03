@@ -1,0 +1,12 @@
+name: Measurement timing compensation
+base_scenario: initial.yaml
+
+# Paired seeds keep every sensor draw identical between compensated and
+# uncompensated cases.
+seeds: [1, 2, 3, 4, 5]
+
+parameters:
+  motion_speed_factor: [2.0]
+  camera.latency_ns: [18000000, 500000000]
+  lidar.scan_duration_ns: [0, 400000000]
+  estimator.timing_compensation: [true, false]

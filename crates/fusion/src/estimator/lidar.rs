@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
-use fusion_schema::messages::LidarScan;
+use anyhow::{Result, ensure};
+use fusion_schema::messages::{LidarScan, StampReference};
 use nalgebra::Vector2;
 
 use crate::{math, scenario::EstimatorConfig};
@@ -62,4 +62,111 @@ pub(super) fn update(
     }
 
     Ok(())
+}
+
+pub(super) fn deskew(
+    scan: &LidarScan,
+    state_at: impl Fn(i64) -> Option<PlanarState>,
+) -> Result<LidarScan> {
+    let header = scan
+        .header
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("lidar scan is missing its header"))?;
+    ensure!(
+        header.stamp_reference == StampReference::End as i32,
+        "lidar deskew requires the scan timestamp to reference acquisition end"
+    );
+    ensure!(
+        header.acquisition_duration_ns >= 0,
+        "lidar acquisition duration must be nonnegative"
+    );
+    if header.acquisition_duration_ns == 0 {
+        return Ok(scan.clone());
+    }
+
+    let scan_start_ns = header.reported_stamp_ns - header.acquisition_duration_ns;
+    let end_state = state_at(header.reported_stamp_ns).ok_or_else(|| {
+        anyhow::anyhow!(
+            "state history does not cover lidar scan end {} ns",
+            header.reported_stamp_ns
+        )
+    })?;
+    let mut deskewed = scan.clone();
+    for hit in &mut deskewed.returns {
+        ensure!(
+            (0..=header.acquisition_duration_ns).contains(&hit.acquisition_offset_ns),
+            "lidar return acquisition offset {} ns is outside scan duration {} ns",
+            hit.acquisition_offset_ns,
+            header.acquisition_duration_ns
+        );
+        let acquisition_ns = scan_start_ns + hit.acquisition_offset_ns;
+        let acquisition_state = state_at(acquisition_ns).ok_or_else(|| {
+            anyhow::anyhow!("state history does not cover lidar return time {acquisition_ns} ns")
+        })?;
+
+        let point_body_at_acquisition = Vector2::new(
+            hit.range_m * hit.azimuth_rad.cos(),
+            hit.range_m * hit.azimuth_rad.sin(),
+        );
+        let point_world = acquisition_state.position_world_m
+            + rotate(
+                point_body_at_acquisition,
+                acquisition_state.yaw_world_from_body_rad,
+            );
+        let point_body_at_end = rotate(
+            point_world - end_state.position_world_m,
+            -end_state.yaw_world_from_body_rad,
+        );
+        hit.range_m = point_body_at_end.norm();
+        hit.azimuth_rad = math::wrap_angle(point_body_at_end.y.atan2(point_body_at_end.x));
+    }
+    Ok(deskewed)
+}
+
+fn rotate(vector: Vector2<f64>, angle_rad: f64) -> Vector2<f64> {
+    let (sin, cos) = angle_rad.sin_cos();
+    Vector2::new(
+        cos * vector.x - sin * vector.y,
+        sin * vector.x + cos * vector.y,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use fusion_schema::messages::{LidarReturn, RecordHeader};
+
+    use super::*;
+
+    #[test]
+    fn deskew_moves_an_early_return_into_the_scan_end_frame() {
+        let scan = LidarScan {
+            header: Some(RecordHeader {
+                reported_stamp_ns: 1_000_000_000,
+                stamp_reference: StampReference::End as i32,
+                acquisition_duration_ns: 1_000_000_000,
+                ..RecordHeader::default()
+            }),
+            returns: vec![LidarReturn {
+                landmark_id: "landmark".to_owned(),
+                range_m: 10.0,
+                azimuth_rad: 0.0,
+                acquisition_offset_ns: 0,
+            }],
+            association_mode: "ORACLE".to_owned(),
+        };
+        let start = PlanarState::default();
+        let mut end = start;
+        end.position_world_m.x = 1.0;
+
+        let result = deskew(
+            &scan,
+            |time_ns| {
+                if time_ns == 0 { Some(start) } else { Some(end) }
+            },
+        )
+        .unwrap();
+
+        assert!((result.returns[0].range_m - 9.0).abs() < 1.0e-12);
+        assert!(result.returns[0].azimuth_rad.abs() < 1.0e-12);
+    }
 }

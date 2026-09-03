@@ -4,6 +4,12 @@ An estimator can run in any language or process. Give it a run's
 `measurements.mcap`, export its planar estimates as CSV, and ask Fusion in
 Motion to score the result against the hidden truth.
 
+The MCAP records are delivered in receipt order. Each Protobuf `RecordHeader`
+contains `reported_stamp_ns` for acquisition time and `receipt_time_ns` for
+arrival time. Interval measurements also carry `acquisition_duration_ns`; each
+lidar return carries its offset inside the scan. An external estimator chooses
+its own buffering, delayed-update, discard, and deskew policies.
+
 Required columns:
 
 ```text

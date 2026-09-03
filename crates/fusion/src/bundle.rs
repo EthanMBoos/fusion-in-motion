@@ -19,6 +19,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    estimator::TimingDiagnostics,
     eval::{METRIC_VERSION, Metrics},
     scenario::{ResolvedScenario, canonical_yaml, sha256},
 };
@@ -138,6 +139,7 @@ impl BundleManifest {
 
     pub fn finish(&mut self, output: &Path, _metrics: &Metrics) -> Result<()> {
         self.record(output, "reports/baseline/metrics.json")?;
+        self.record(output, "reports/baseline/timing.json")?;
         self.record(output, "reports/baseline/summary.md")?;
         let visualization = output.join("reports/baseline/visualization.rrd");
         if visualization.is_file() {
@@ -302,14 +304,32 @@ pub fn read_estimates(path: &Path) -> Result<Vec<StateEstimate>> {
     Ok(estimates)
 }
 
-pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenario) -> Result<()> {
+pub fn write_reports(
+    output: &Path,
+    metrics: &Metrics,
+    scenario: &ResolvedScenario,
+    timing: &TimingDiagnostics,
+) -> Result<()> {
     write_named_reports(output, "baseline", metrics)?;
     let report_dir = output.join("reports/baseline");
+    fs::write(
+        report_dir.join("timing.json"),
+        serde_json::to_vec_pretty(timing)?,
+    )?;
+    let timing_mode = if timing.timing_compensation {
+        format!(
+            "fixed-lag replay and lidar deskew ({:.1} ms history)",
+            timing.history_duration_ns as f64 / 1.0e6
+        )
+    } else {
+        "arrival-time updates; lidar scans treated as instantaneous".to_owned()
+    };
     let mut summary = format!(
         "# Results\n\n## Scenario\n\n\
          - Motion speed: {:.2}x\n\
          - Camera: {:.1} Hz, {:.1} ms latency, {:.0}% detection probability\n\
          - Lidar: {:.1} Hz, {:.1} ms latency, {:.1} ms scan duration\n\
+         - Estimator timing: {}\n\
          - Random seed: {}\n\n\
          ## Result\n\n\
          - Position RMSE: {:.3} m (position error over the run)\n\
@@ -326,6 +346,7 @@ pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenar
         scenario.lidar.rate_hz,
         scenario.lidar.latency_ns as f64 / 1.0e6,
         scenario.lidar.scan_duration_ns as f64 / 1.0e6,
+        timing_mode,
         scenario.root_seed,
         metrics.position_rmse_m,
         metrics.yaw_rmse_rad,
@@ -336,6 +357,22 @@ pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenar
         metrics.diverged_output_count,
         metrics.time_coverage_fraction * 100.0,
     );
+    summary.push_str(&format!(
+        "## Timing processing\n\n\
+         - Delayed measurements observed: {}\n\
+         - Measurements replayed: {}\n\
+         - Measurements discarded outside history: {}\n\
+         - Revised estimates: {}\n\
+         - Deskewed lidar scans: {} ({} returns)\n\
+         - Maximum delivery age: {:.1} ms\n\n",
+        timing.delayed_measurements,
+        timing.replayed_measurements,
+        timing.discarded_measurements,
+        timing.revised_estimates,
+        timing.deskewed_lidar_scans,
+        timing.deskewed_lidar_returns,
+        timing.maximum_delivery_age_ns as f64 / 1.0e6,
+    ));
     summary.push_str("## Covariance consistency\n\n");
     summary.push_str(&consistency_markdown(metrics));
     summary.push_str(

@@ -9,8 +9,9 @@ saves an animated Rerun dashboard.
 
 The initial example is a planar ground robot with an IMU, camera landmark
 bearings, and timed lidar returns. A small EKF is included as a working
-baseline. Change the platform speed, sensor rates, latency, noise, or missed
-detections to see how the estimate responds.
+baseline. It can compensate delayed observations and moving lidar scans or run
+without that processing for comparison. Change the platform speed, sensor
+rates, latency, noise, or missed detections to see how the estimate responds.
 
 Start with [three guided experiments](docs/START_HERE.md): run the baseline,
 read the dashboard, then change speed, camera latency, and lidar scan duration
