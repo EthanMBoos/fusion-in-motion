@@ -48,3 +48,9 @@ fusion view runs/run001 --estimator my-filter
 Availability currently assumes an output cadence comparable to the IMU/truth
 cadence. Accuracy and time coverage remain useful for lower-rate estimators,
 but their availability number will be conservative.
+
+The CSV format does not carry covariance. CSV estimates therefore receive
+accuracy metrics but no ANEES, confidence coverage, or uncertainty-bound plots.
+The MCAP `StateEstimate` schema carries a row-major 6×6 covariance for
+`[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]` when
+`covariance_kind` is `FULL`.

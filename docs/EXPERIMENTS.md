@@ -132,9 +132,18 @@ conclusion from a comparison.
 
 ## Results
 
-The initial evaluator reports position and yaw error, final drift, availability,
-time coverage, divergence, and time to first valid output. Sweep reports place
-those metrics beside the parameter values and seed for each case.
+The evaluator reports position and yaw error, final drift, availability, time
+coverage, divergence, and time to first valid output. For estimators that emit
+a full covariance, it also validates the matrix and reports ANEES plus marginal
+95% coverage for x, y, yaw, and forward speed. Sweep reports retain the
+parameter values and root seed for paired comparisons.
+
+The covariance is row-major for
+`[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`. Consistency errors use
+additive world-frame x/y, wrapped world-from-body yaw, and signed body-forward
+speed. Bias blocks are validated but not scored because realized bias truth is
+not stored. The dashboard's position uncertainty line is the outer radius of
+the 2D 95% covariance ellipse, not a marginal x or y bound.
 
 The values describe this analytic experiment. They are not claims about the
 performance of physical sensors.

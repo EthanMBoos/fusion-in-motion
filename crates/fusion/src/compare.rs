@@ -51,7 +51,49 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
         variant_metrics.availability_fraction * 100.0,
         true,
     );
-    out.push_str("\nPositive error deltas are worse. Positive availability deltas are better.\n");
+    if let (Some(baseline_consistency), Some(variant_consistency)) = (
+        baseline_metrics.covariance_consistency.as_ref(),
+        variant_metrics.covariance_consistency.as_ref(),
+    ) {
+        row(
+            &mut out,
+            "normalized ANEES",
+            baseline_consistency.normalized_anees,
+            variant_consistency.normalized_anees,
+            false,
+        );
+        for (name, baseline, variant) in [
+            (
+                "x 95% coverage (%)",
+                baseline_consistency.marginal_coverage_95.x_fraction,
+                variant_consistency.marginal_coverage_95.x_fraction,
+            ),
+            (
+                "y 95% coverage (%)",
+                baseline_consistency.marginal_coverage_95.y_fraction,
+                variant_consistency.marginal_coverage_95.y_fraction,
+            ),
+            (
+                "yaw 95% coverage (%)",
+                baseline_consistency.marginal_coverage_95.yaw_fraction,
+                variant_consistency.marginal_coverage_95.yaw_fraction,
+            ),
+            (
+                "speed 95% coverage (%)",
+                baseline_consistency
+                    .marginal_coverage_95
+                    .forward_speed_fraction,
+                variant_consistency
+                    .marginal_coverage_95
+                    .forward_speed_fraction,
+            ),
+        ] {
+            row(&mut out, name, baseline * 100.0, variant * 100.0, true);
+        }
+    }
+    out.push_str(
+        "\nPositive error deltas are worse. Positive availability deltas are better.\nNormalized ANEES should be judged against 1.0 and marginal coverage against 95%, not by delta direction alone.\n",
+    );
     Ok(out)
 }
 

@@ -19,7 +19,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    eval::Metrics,
+    eval::{METRIC_VERSION, Metrics},
     scenario::{ResolvedScenario, canonical_yaml, sha256},
 };
 
@@ -119,7 +119,7 @@ impl BundleManifest {
             random_algorithm: "SHA-256 to uniform f64; Box-Muller normal transform".to_owned(),
             random_version: "fusion-deterministic-random-1".to_owned(),
             estimator_id: scenario.estimator.id.clone(),
-            metric_version: "fusion-eval-0.1".to_owned(),
+            metric_version: METRIC_VERSION.to_owned(),
             metric_alignment: scenario.metrics.alignment.clone(),
             artifacts: BTreeMap::new(),
         })
@@ -305,7 +305,7 @@ pub fn read_estimates(path: &Path) -> Result<Vec<StateEstimate>> {
 pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenario) -> Result<()> {
     write_named_reports(output, "baseline", metrics)?;
     let report_dir = output.join("reports/baseline");
-    let summary = format!(
+    let mut summary = format!(
         "# Results\n\n## Scenario\n\n\
          - Motion speed: {:.2}x\n\
          - Camera: {:.1} Hz, {:.1} ms latency, {:.0}% detection probability\n\
@@ -318,12 +318,7 @@ pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenar
          - Maximum position error: {:.3} m\n\
          - Availability: {:.1}% (valid outputs at the expected output cadence)\n\
          - Outputs above the {:.1} m divergence limit: {}\n\
-         - Time coverage: {:.1}%\n\n\
-         ## Limits\n\n\
-         These are accuracy metrics. Covariance consistency and confidence calibration are not evaluated.\n\n\
-         ## Commands\n\n\
-         - `fusion view {}`\n\
-         - `fusion compare <baseline-run> {}`\n",
+         - Time coverage: {:.1}%\n\n",
         scenario.motion_speed_factor,
         scenario.camera.rate_hz,
         scenario.camera.latency_ns as f64 / 1.0e6,
@@ -340,9 +335,17 @@ pub fn write_reports(output: &Path, metrics: &Metrics, scenario: &ResolvedScenar
         scenario.metrics.divergence_position_error_m,
         metrics.diverged_output_count,
         metrics.time_coverage_fraction * 100.0,
-        output.display(),
-        output.display(),
     );
+    summary.push_str("## Covariance consistency\n\n");
+    summary.push_str(&consistency_markdown(metrics));
+    summary.push_str(
+        "\nANEES from one time-correlated trajectory is a diagnostic. Use paired seeds before drawing a statistical conclusion.\n\n",
+    );
+    summary.push_str(&format!(
+        "## Commands\n\n- `fusion view {}`\n- `fusion compare <baseline-run> {}`\n",
+        output.display(),
+        output.display(),
+    ));
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
 }
@@ -354,7 +357,7 @@ pub fn write_named_reports(output: &Path, name: &str, metrics: &Metrics) -> Resu
         report_dir.join("metrics.json"),
         serde_json::to_vec_pretty(metrics)?,
     )?;
-    let summary = format!(
+    let mut summary = format!(
         "# Fusion in Motion baseline result\n\n\
          - Estimator: `{}`\n\
          - Alignment: `{}`\n\
@@ -367,7 +370,8 @@ pub fn write_named_reports(output: &Path, name: &str, metrics: &Metrics) -> Resu
          - Time coverage: {:.2}%\n\
          - Invalid outputs: {}\n\
          - Diverged outputs: {}\n\
-         - Maximum position error: {:.6} m\n",
+         - Maximum position error: {:.6} m\n\n\
+         ## Covariance consistency\n\n",
         metrics.estimator_id,
         metrics.alignment,
         metrics.matched_samples,
@@ -382,8 +386,38 @@ pub fn write_named_reports(output: &Path, name: &str, metrics: &Metrics) -> Resu
         metrics.diverged_output_count,
         metrics.maximum_position_error_m,
     );
+    summary.push_str(&consistency_markdown(metrics));
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
+}
+
+fn consistency_markdown(metrics: &Metrics) -> String {
+    let Some(consistency) = metrics.covariance_consistency.as_ref() else {
+        return format!(
+            "- Full covariance samples: 0\n- Missing covariance samples: {}\n- ANEES and confidence coverage: unavailable\n",
+            metrics.missing_covariance_samples
+        );
+    };
+    let coverage = &consistency.marginal_coverage_95;
+    format!(
+        "- Full covariance samples: {}\n\
+         - Missing covariance samples: {}\n\
+         - ANEES ({} DoF): {:.3}\n\
+         - Normalized ANEES: {:.3} (expected mean 1.000)\n\
+         - Marginal 95% coverage: x {:.1}%, y {:.1}%, yaw {:.1}%, forward speed {:.1}%\n\
+         - Covariance order: `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`, row-major\n\
+         - Error coordinates: additive world-frame x/y, wrapped world-from-body yaw, signed body-forward speed\n\
+         - Bias covariance is validated but bias consistency is not scored because realized bias truth is not stored.\n",
+        metrics.full_covariance_samples,
+        metrics.missing_covariance_samples,
+        consistency.degrees_of_freedom,
+        consistency.anees,
+        consistency.normalized_anees,
+        coverage.x_fraction * 100.0,
+        coverage.y_fraction * 100.0,
+        coverage.yaw_fraction * 100.0,
+        coverage.forward_speed_fraction * 100.0,
+    )
 }
 
 pub fn refresh_visualization_artifact(output: &Path) -> Result<()> {

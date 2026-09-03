@@ -57,6 +57,11 @@ pub struct SweepGroup {
     pub mean_yaw_rmse_rad: Option<f64>,
     pub mean_final_position_error_m: Option<f64>,
     pub mean_availability_fraction: Option<f64>,
+    pub mean_normalized_anees: Option<f64>,
+    pub mean_x_coverage_95_fraction: Option<f64>,
+    pub mean_y_coverage_95_fraction: Option<f64>,
+    pub mean_yaw_coverage_95_fraction: Option<f64>,
+    pub mean_forward_speed_coverage_95_fraction: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -259,6 +264,13 @@ fn aggregate(results: &[SweepCaseResult]) -> Vec<SweepGroup> {
             let mean = |value: fn(&Metrics) -> f64| {
                 (count > 0).then(|| successful.iter().map(|m| value(m)).sum::<f64>() / count as f64)
             };
+            let mean_optional = |value: fn(&Metrics) -> Option<f64>| {
+                let values = successful
+                    .iter()
+                    .filter_map(|metrics| value(metrics))
+                    .collect::<Vec<_>>();
+                (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+            };
             SweepGroup {
                 parameters: cases[0].parameters.clone(),
                 cases: cases.len(),
@@ -268,6 +280,36 @@ fn aggregate(results: &[SweepCaseResult]) -> Vec<SweepGroup> {
                 mean_yaw_rmse_rad: mean(|m| m.yaw_rmse_rad),
                 mean_final_position_error_m: mean(|m| m.final_position_error_m),
                 mean_availability_fraction: mean(|m| m.availability_fraction),
+                mean_normalized_anees: mean_optional(|metrics| {
+                    metrics
+                        .covariance_consistency
+                        .as_ref()
+                        .map(|consistency| consistency.normalized_anees)
+                }),
+                mean_x_coverage_95_fraction: mean_optional(|metrics| {
+                    metrics
+                        .covariance_consistency
+                        .as_ref()
+                        .map(|consistency| consistency.marginal_coverage_95.x_fraction)
+                }),
+                mean_y_coverage_95_fraction: mean_optional(|metrics| {
+                    metrics
+                        .covariance_consistency
+                        .as_ref()
+                        .map(|consistency| consistency.marginal_coverage_95.y_fraction)
+                }),
+                mean_yaw_coverage_95_fraction: mean_optional(|metrics| {
+                    metrics
+                        .covariance_consistency
+                        .as_ref()
+                        .map(|consistency| consistency.marginal_coverage_95.yaw_fraction)
+                }),
+                mean_forward_speed_coverage_95_fraction: mean_optional(|metrics| {
+                    metrics
+                        .covariance_consistency
+                        .as_ref()
+                        .map(|consistency| consistency.marginal_coverage_95.forward_speed_fraction)
+                }),
             }
         })
         .collect()
@@ -281,12 +323,12 @@ fn write_reports(output: &Path, report: &SweepReport) -> Result<()> {
     )?;
 
     let mut csv = String::from(
-        "case_id,status,root_seed,parameters,position_rmse_m,yaw_rmse_rad,final_position_error_m,availability_fraction,error\n",
+        "case_id,status,root_seed,parameters,position_rmse_m,yaw_rmse_rad,final_position_error_m,availability_fraction,anees,normalized_anees,x_coverage_95_fraction,y_coverage_95_fraction,yaw_coverage_95_fraction,forward_speed_coverage_95_fraction,error\n",
     );
     for case in &report.cases {
         let metrics = case.metrics.as_ref();
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_field(&case.case_id),
             csv_field(&case.status),
             case.root_seed,
@@ -295,23 +337,55 @@ fn write_reports(output: &Path, report: &SweepReport) -> Result<()> {
             optional_number(metrics.map(|m| m.yaw_rmse_rad)),
             optional_number(metrics.map(|m| m.final_position_error_m)),
             optional_number(metrics.map(|m| m.availability_fraction)),
+            optional_number(metrics.and_then(|m| {
+                m.covariance_consistency
+                    .as_ref()
+                    .map(|consistency| consistency.anees)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.covariance_consistency
+                    .as_ref()
+                    .map(|consistency| consistency.normalized_anees)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.covariance_consistency
+                    .as_ref()
+                    .map(|consistency| consistency.marginal_coverage_95.x_fraction)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.covariance_consistency
+                    .as_ref()
+                    .map(|consistency| consistency.marginal_coverage_95.y_fraction)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.covariance_consistency
+                    .as_ref()
+                    .map(|consistency| consistency.marginal_coverage_95.yaw_fraction)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.covariance_consistency
+                    .as_ref()
+                    .map(|consistency| consistency.marginal_coverage_95.forward_speed_fraction)
+            })),
             csv_field(case.error.as_deref().unwrap_or("")),
         ));
     }
     fs::write(report_dir.join("results.csv"), csv)?;
 
     let mut summary = format!(
-        "# {}\n\n- Cases: {}\n- Successful: {}\n- Failed: {}\n\n## Parameter groups\n\n| Parameters | Runs | Failed | Mean position RMSE (m) | Mean yaw RMSE (rad) | Availability |\n| --- | ---: | ---: | ---: | ---: | ---: |\n",
+        "# {}\n\n- Cases: {}\n- Successful: {}\n- Failed: {}\n\n## Parameter groups\n\n| Parameters | Runs | Failed | Mean position RMSE (m) | Mean yaw RMSE (rad) | Normalized ANEES | 95% coverage x/y/yaw/speed | Availability |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |\n",
         report.name, report.case_count, report.successful_cases, report.failed_cases
     );
     for group in &report.groups {
         summary.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
             markdown_parameters(&group.parameters),
             group.cases,
             group.failed_cases,
             display_number(group.mean_position_rmse_m),
             display_number(group.mean_yaw_rmse_rad),
+            display_number(group.mean_normalized_anees),
+            display_coverage(group),
             group
                 .mean_availability_fraction
                 .map(|value| format!("{:.1}%", value * 100.0))
@@ -319,7 +393,7 @@ fn write_reports(output: &Path, report: &SweepReport) -> Result<()> {
         ));
     }
     summary.push_str(
-        "\nEach `case-NNNN` directory is a normal experiment bundle. Open an interesting case with `fusion view <case-directory>`.\n",
+        "\nEvery parameter group uses the same configured seed set. `results.csv` retains `root_seed`, so compare groups seed-for-seed rather than treating runs as unpaired. Normalized ANEES has expected mean 1.0; each marginal coverage target is 95%.\n\nEach `case-NNNN` directory is a normal experiment bundle. Open an interesting case with `fusion view <case-directory>`.\n",
     );
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
@@ -337,6 +411,21 @@ fn display_number(value: Option<f64>) -> String {
     value
         .map(|number| format!("{number:.6}"))
         .unwrap_or_else(|| "—".to_owned())
+}
+
+fn display_coverage(group: &SweepGroup) -> String {
+    [
+        group.mean_x_coverage_95_fraction,
+        group.mean_y_coverage_95_fraction,
+        group.mean_yaw_coverage_95_fraction,
+        group.mean_forward_speed_coverage_95_fraction,
+    ]
+    .map(|value| {
+        value
+            .map(|fraction| format!("{:.1}%", fraction * 100.0))
+            .unwrap_or_else(|| "—".to_owned())
+    })
+    .join(" / ")
 }
 
 fn csv_field(value: &str) -> String {

@@ -69,7 +69,11 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     assert!(fs::metadata(output.join("reports/baseline/visualization.rrd"))?.len() > 100);
     let summary = fs::read_to_string(output.join("reports/baseline/summary.md"))?;
     assert!(summary.contains("Covariance consistency"));
+    assert!(summary.contains("Normalized ANEES"));
     assert!(summary.contains("Outputs above the 5.0 m divergence limit"));
+    let metrics: fusion_in_motion::eval::Metrics =
+        serde_json::from_slice(&fs::read(output.join("reports/baseline/metrics.json"))?)?;
+    assert!(metrics.covariance_consistency.is_some());
     let measurements = bundle::read_measurements(&output.join("measurements.mcap"))?;
     assert!(
         measurements
@@ -113,6 +117,7 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
         fusion_in_motion::score_estimate_csv(&output, &external_csv, "perfect-csv")?;
     assert!(external_metrics.position_rmse_m < 1.0e-12);
     assert!(external_metrics.yaw_rmse_rad < 1.0e-12);
+    assert!(external_metrics.covariance_consistency.is_none());
     assert!(output.join("estimates/perfect-csv.mcap").is_file());
     assert!(output.join("reports/perfect-csv/summary.md").is_file());
     Ok(())
@@ -145,6 +150,7 @@ fn comparison_shows_metric_differences() -> Result<()> {
 
     let comparison = fusion_in_motion::compare::render(&baseline, &variant)?;
     assert!(comparison.contains("position RMSE (m)"));
+    assert!(comparison.contains("normalized ANEES"));
     Ok(())
 }
 
@@ -175,5 +181,9 @@ fn sweep_runs_parameter_cases_and_writes_aggregate_reports() -> Result<()> {
             .join("case-0000/reports/baseline/visualization.rrd")
             .exists()
     );
+    let csv = fs::read_to_string(output.join("reports/results.csv"))?;
+    let header = csv.lines().next().expect("sweep CSV header");
+    assert!(header.contains("root_seed"));
+    assert!(header.contains("normalized_anees"));
     Ok(())
 }

@@ -9,6 +9,7 @@ use fusion_schema::messages::{Pose, RecordHeader, StateEstimate, TruthState};
 
 use crate::{
     bundle::{self, MeasurementRecord},
+    eval,
     math::{wrap_angle, yaw_from_pose},
     scenario::{ResolvedScenario, load_and_resolve},
 };
@@ -19,6 +20,8 @@ const LANDMARK_COLOR: u32 = 0xFFD54FFF;
 const CAMERA_COLOR: u32 = 0x33CCFFFF;
 const LIDAR_COLOR: u32 = 0x4488FFFF;
 const YAW_ERROR_COLOR: u32 = 0xFF9933FF;
+const POSITION_BOUND_COLOR: u32 = 0xFFB3C1FF;
+const YAW_BOUND_COLOR: u32 = 0xFFD199FF;
 const REFERENCE_COLOR: u32 = 0x667080FF;
 
 pub fn default_visualization_path(bundle: &Path) -> PathBuf {
@@ -96,7 +99,7 @@ pub fn write_bundle_visualization(
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::from_markdown(
-            "- **Map:** green truth, pink estimate.\n- **Camera:** bearings only; no depth.\n- **Lidar:** range and bearing; orange is early in the scan, cyan is late.\n- **Timing:** age is receipt time minus reported time. Acquisition is the interval covered by one record.\n- **Error:** accuracy only; covariance consistency is not evaluated.\n\nDrag the timeline to inspect one time across every panel.",
+            "- **Map:** green truth, pink estimate.\n- **Camera:** bearings only; no depth.\n- **Lidar:** range and bearing; orange is early in the scan, cyan is late.\n- **Timing:** age is receipt time minus reported time. Acquisition is the interval covered by one record.\n- **Error:** absolute error, the outer radius of the 2D position 95% ellipse, and the yaw 95% bound.\n\nDrag the timeline to inspect one time across every panel.",
         ),
     )?;
 
@@ -136,6 +139,16 @@ fn log_series_styles(rec: &rerun::RecordingStream) -> Result<()> {
             ESTIMATE_COLOR,
         ),
         ("plots/error/yaw_rad", "yaw error (rad)", YAW_ERROR_COLOR),
+        (
+            "plots/error/position_bound_95_m",
+            "position 95% outer bound (m)",
+            POSITION_BOUND_COLOR,
+        ),
+        (
+            "plots/error/yaw_bound_95_rad",
+            "yaw 95% bound (rad)",
+            YAW_BOUND_COLOR,
+        ),
         ("plots/imu/gyro_z_radps", "gyro z (rad/s)", CAMERA_COLOR),
         ("plots/imu/accel_x_mps2", "accel x (m/s²)", LIDAR_COLOR),
         ("plots/observations/camera", "camera features", CAMERA_COLOR),
@@ -570,7 +583,7 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
     ])
     .with_grid_columns(2);
     let plots = Grid::new([
-        TimeSeriesView::new("Estimation error")
+        TimeSeriesView::new("Error + 95% bounds")
             .with_origin("plots/error")
             .into(),
         TimeSeriesView::new("Measurement timing")
@@ -644,6 +657,17 @@ fn log_errors(
             &rerun::Scalars::single(position_error),
         )?;
         rec.log("plots/error/yaw_rad", &rerun::Scalars::single(yaw_error))?;
+        if let Some(covariance) = eval::validated_covariance(estimate)? {
+            let (position_bound_m, yaw_bound_rad) = eval::error_bounds_95(&covariance);
+            rec.log(
+                "plots/error/position_bound_95_m",
+                &rerun::Scalars::single(position_bound_m),
+            )?;
+            rec.log(
+                "plots/error/yaw_bound_95_rad",
+                &rerun::Scalars::single(yaw_bound_rad),
+            )?;
+        }
     }
     Ok(())
 }

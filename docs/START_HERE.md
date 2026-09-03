@@ -77,10 +77,14 @@ lidar scan can also cover more than one platform pose.
 - Final error is the last sample only.
 - Maximum error catches short excursions.
 - Availability is the fraction of expected outputs that were valid.
-- The gray line is the divergence threshold.
+- The error plot compares position and yaw error with reported 95% covariance.
+  The position line is the outer radius of the 2D covariance ellipse; the yaw
+  line is the marginal 95% bound.
 
-These are accuracy metrics. The repository does not yet evaluate covariance
-consistency or confidence calibration.
+The report also gives marginal 95% coverage and average normalized estimation
+error squared (ANEES) for world x/y, wrapped yaw, and signed forward speed.
+Normalized ANEES has expected mean 1.0. Use paired seeds before treating either
+coverage or ANEES as evidence of consistency.
 
 ## Experiment 1: speed
 

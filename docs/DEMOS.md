@@ -14,7 +14,7 @@ EKF, parameter sweeps, scoring, and Rerun visualization.
 | Demo | Status | Available now |
 | --- | --- | --- |
 | Current 2D demo | **Runnable** | IMU, camera, timed lidar, dashboard, scoring, and sweeps |
-| 1. Accuracy vs consistency | Planned | Accuracy metrics exist; covariance consistency metrics and uncertainty plots do not |
+| 1. Accuracy vs consistency | **Runnable** | Covariance validation, ANEES, marginal coverage, paired-seed sweep output, and uncertainty plots |
 | 2. Delayed measurements | Planned | Latency and measurement age exist; discard and fixed-lag policies do not |
 | 3. Lidar scan timing | **Partly runnable** | Per-return time, scan color, and platform motion are visible; deskewed estimator comparison is not implemented |
 | 4–7. External estimators through 3D | Planned | The saved-bundle and external CSV scoring boundaries exist |
@@ -26,16 +26,23 @@ The demos below turn that core into evidence that the tool is useful.
 
 ## 1. Accurate is not the same as consistent
 
-Run the baseline EKF with three measurement-noise configurations:
+Run the baseline EKF with three lidar range-noise assumptions:
 
 - matched to the simulated sensor noise;
-- deliberately underestimated; and
-- deliberately overestimated.
+- underestimated; and
+- overestimated.
 
-Use identical generated measurements and paired random seeds for all three.
-Add covariance validation, confidence coverage, and ANEES for the state
-components with matching truth. Plot estimation error with the reported
-uncertainty bounds.
+Use identical generated measurements and paired random seeds for all three:
+
+```sh
+fusion sweep examples/consistency_sweep.yaml --output runs/consistency
+```
+
+The evaluator validates every full 6×6 covariance. It reports marginal 95%
+coverage and ANEES for `[x, y, yaw, forward_speed]`, the state components with
+matching truth. The dashboard plots position and yaw error with reported 95%
+uncertainty. The position line is the outer radius of the 2D covariance ellipse;
+the yaw line is the marginal 95% bound.
 
 ### What it demonstrates
 
@@ -52,14 +59,13 @@ working correctly.
   Consistent EKF SLAM
   Estimators](https://doi.org/10.1177/0278364909353640).
 
-### What this adds
+### What this provides
 
 - covariance and consistency scoring;
-- paired multi-estimator, multi-seed reports; and
+- paired multi-configuration, multi-seed reports; and
 - uncertainty plots reusable by every later demo.
 
-With trustworthy uncertainty metrics in place, the next demo can show what
-happens when otherwise valid measurements arrive late.
+The next demo covers what happens when valid measurements arrive late.
 
 ## 2. Delayed measurements need state history
 
