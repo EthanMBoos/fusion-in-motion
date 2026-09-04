@@ -21,16 +21,16 @@ images or point clouds.
 Install the command using [docs/INSTALL.md](docs/INSTALL.md), then run:
 
 ```sh
-fusion run examples/initial.yaml --view
+fusion run experiments/initial.yaml --view
 ```
 
 Runs are saved as `runs/run001`, `runs/run002`, and so on. Start with
 [docs/START_HERE.md](docs/START_HERE.md) for the dashboard and the first edits
 to try.
 
-The initial example keeps latency, IMU bias, missed detections, and outlier
-gating out of the way. The other examples add those effects when they are the
-point of the experiment. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
+The starter keeps latency, IMU bias, missed detections, and outlier gating out
+of the way. The files under [`experiments/`](experiments/) add those effects one
+at a time. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for the sequence.
 
 [docs/REFERENCES.md](docs/REFERENCES.md) contains the simulator and benchmark
 review, literature, and recommended demo roadmap.

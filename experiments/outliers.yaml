@@ -1,3 +1,9 @@
+# GPS outlier experiment
+#
+# Question: When should the estimator reject a GPS fix?
+# Watch the yellow GPS fixes, pink vehicle path, and accepted/rejected GPS counts.
+# A loose gate accepts bad fixes. A tight gate can also reject useful fixes.
+
 root_seed: 20260823
 
 world:
@@ -19,11 +25,11 @@ trajectory:
   - { id: brake, duration_s: 2.0, longitudinal_acceleration_mps2: -0.5, yaw_rate_radps: 0.0 }
   - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
 
-imu:
-  gyro_bias_radps: 0.003
-  accel_bias_mps2: 0.025
-  gyro_bias_random_walk_radps_sqrt_s: 0.00002
-  accel_bias_random_walk_mps2_sqrt_s: 0.0005
+gps:
+  # Increase the probability to generate more bad fixes.
+  outlier_probability: 0.15
+  outlier_stddev_m: 10.0
 
 ego_estimator:
-  estimate_imu_bias: true
+  # Raise this to accept more fixes or lower it to reject more.
+  gps_gate_sigma: 4.0

@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn speed_factor_preserves_path_and_scales_time() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/initial.yaml");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../experiments/initial.yaml");
         let nominal_scenario = crate::scenario::load_and_resolve(&path).unwrap();
         let mut fast_scenario = nominal_scenario.clone();
         fast_scenario.motion_speed_factor = 2.0;

@@ -1,3 +1,9 @@
+# Object association experiment
+#
+# Question: Can the tracker keep two tracks separate when detections have no IDs?
+# The objects pass within one meter around 5 seconds. Scrub from 4 to 6 seconds.
+# Watch whether track-001 and track-002 continue on the same paths after crossing.
+
 root_seed: 20260823
 
 world:
@@ -29,6 +35,7 @@ camera:
   horizontal_fov_rad: 2.8
   max_range_m: 25.0
   bearing_noise_stddev_rad: 0.006
+  # Lower this and the lidar probability to create missed detections.
   detection_probability: 0.9
 
 lidar:
@@ -42,6 +49,8 @@ lidar:
 
 object_tracker:
   acceleration_noise_stddev_mps2: 0.5
+  # Lower the gate to reject more pairings; raise it to allow distant pairings.
   gate_sigma: 4.0
+  # These control when a new track appears and when a missing track is removed.
   confirmation_hits: 2
   max_missed_lidar_scans: 3

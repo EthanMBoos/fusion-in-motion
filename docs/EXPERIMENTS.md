@@ -1,52 +1,34 @@
 # Experiments
 
-Start with `examples/initial.yaml`. It exposes the sensor rates, basic noise,
-field of view, range, objects, and vehicle motion. Unknown YAML fields are
-rejected so typos do not silently change a run.
+Each study is a YAML file. Its opening comments state the question and what to
+watch. Comments beside individual settings suggest edits.
 
-The examples add complexity in this order:
+Work through them in this order:
 
-| Example | Adds | Watch |
-| --- | --- | --- |
-| `initial.yaml` | GPS/IMU localization and camera/lidar tracking | vehicle and object error |
-| `imu_bias.yaml` | sensor bias, drift, and bias estimation | the two bias plots |
-| `outliers.yaml` | bad GPS fixes and observation gating | accepted and rejected update counts |
-| `timing.yaml` | latency, lidar scan time, and delayed-data handling | GPS age and error during turns |
-| `association.yaml` | unlabeled detections, track IDs, and crossing objects | track IDs before and after the crossing |
-| `localization_sweep.yaml` | paired seeds over GPS settings | mean and spread of vehicle error |
-| `perception_sweep.yaml` | paired seeds over perception settings | object error and ego cost |
+1. [`initial.yaml`](../experiments/initial.yaml)
+2. [`imu_bias.yaml`](../experiments/imu_bias.yaml)
+3. [`outliers.yaml`](../experiments/outliers.yaml)
+4. [`timing.yaml`](../experiments/timing.yaml)
+5. [`association.yaml`](../experiments/association.yaml)
 
-The bias, outlier, and timing examples have short guides in
-[BIAS_EXPERIMENT.md](BIAS_EXPERIMENT.md),
-[OUTLIER_EXPERIMENT.md](OUTLIER_EXPERIMENT.md), and
-[TIMING_EXPERIMENT.md](TIMING_EXPERIMENT.md). The association example is
-explained in [ASSOCIATION_EXPERIMENT.md](ASSOCIATION_EXPERIMENT.md).
-
-Run an example with:
+Run one with:
 
 ```sh
-fusion run examples/imu_bias.yaml --view
+fusion run experiments/imu_bias.yaml --view
 ```
 
-The default output is the next free `runs/runNNN` directory. Use `--output` only
-when a named location is useful.
+The default output is the next free `runs/runNNN` directory. Reopen it with
+`fusion view runs/run001`, or compare two runs with
+`fusion compare runs/run001 runs/run002`.
 
 ## Sweeps
 
-A sweep replaces selected scenario fields with lists and runs every combination
-over the same seeds:
-
-```yaml
-name: GPS noise and rate
-base_scenario: initial.yaml
-seeds: [10, 11, 12, 13, 14]
-parameters:
-  gps.rate_hz: [1.0, 2.0, 5.0]
-  gps.horizontal_position_stddev_m: [0.1, 0.5, 1.0]
-```
+[`localization_sweep.yaml`](../experiments/localization_sweep.yaml) and
+[`perception_sweep.yaml`](../experiments/perception_sweep.yaml) run parameter
+grids over paired random seeds:
 
 ```sh
-fusion sweep examples/localization_sweep.yaml --output runs/localization-sweep
+fusion sweep experiments/localization_sweep.yaml --output runs/localization-sweep
 ```
 
 The report contains every case, group means, sample standard deviation, and a
@@ -66,6 +48,6 @@ reports/baseline/summary.md
 reports/baseline/visualization.rrd
 ```
 
-The resolved scenario records the defaults that were omitted from the example.
-One seed is useful for debugging. Use several paired seeds before making a
-general claim.
+The resolved scenario records the defaults omitted from the experiment. One
+seed is useful for debugging. Use several paired seeds before making a general
+claim.

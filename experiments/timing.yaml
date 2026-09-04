@@ -1,3 +1,9 @@
+# Sensor timing experiment
+#
+# Question: What happens when measurements arrive after the moment they describe?
+# Watch GPS age and vehicle/object error during the turns.
+# Turn off both compensation settings and compare delayed-measurement counts.
+
 root_seed: 20260823
 
 world:
@@ -20,6 +26,7 @@ trajectory:
   - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
 
 imu:
+  # Each latency delays arrival without changing measurement time.
   latency_ns: 1000000
 
 gps:
@@ -30,9 +37,11 @@ camera:
 
 lidar:
   latency_ns: 32000000
+  # Returns within one scan are measured at different times.
   scan_duration_ns: 80000000
 
 ego_estimator:
+  # Try false here and for the object tracker.
   timing_compensation: true
 
 object_tracker:

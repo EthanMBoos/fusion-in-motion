@@ -9,12 +9,12 @@ use fusion_in_motion::{
 };
 use prost::Message;
 
-fn example() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/initial.yaml")
+fn starter_experiment() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../experiments/initial.yaml")
 }
 
-fn named_example(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../examples/{name}"))
+fn experiment(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../experiments/{name}"))
 }
 
 fn split(records: &[MeasurementRecord]) -> (Vec<EgoMeasurement>, Vec<PerceptionMeasurement>) {
@@ -39,7 +39,7 @@ fn split(records: &[MeasurementRecord]) -> (Vec<EgoMeasurement>, Vec<PerceptionM
 
 #[test]
 fn generation_is_repeatable_and_contains_all_four_sensors() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&example())?;
+    let scenario = scenario::load_and_resolve(&starter_experiment())?;
     let first = sensor::generate(&scenario)?;
     let second = sensor::generate(&scenario)?;
     assert_eq!(first.measurements.len(), second.measurements.len());
@@ -78,7 +78,7 @@ fn generation_is_repeatable_and_contains_all_four_sensors() -> Result<()> {
 fn complete_run_writes_the_small_bundle() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let run = temp.path().join("run");
-    fusion_in_motion::run_experiment(&example(), &run)?;
+    fusion_in_motion::run_experiment(&starter_experiment(), &run)?;
     for relative in [
         "scenario.resolved.yaml",
         "measurements.mcap",
@@ -100,7 +100,7 @@ fn complete_run_writes_the_small_bundle() -> Result<()> {
 
 #[test]
 fn perception_settings_cannot_change_ego_estimates() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&example())?;
+    let scenario = scenario::load_and_resolve(&starter_experiment())?;
     let baseline = sensor::generate(&scenario)?;
     let mut changed = scenario.clone();
     changed.camera.bearing_noise_stddev_rad *= 20.0;
@@ -128,7 +128,7 @@ fn perception_settings_cannot_change_ego_estimates() -> Result<()> {
 
 #[test]
 fn both_tracker_controls_use_the_same_detections() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&example())?;
+    let scenario = scenario::load_and_resolve(&starter_experiment())?;
     let generated = sensor::generate(&scenario)?;
     let (ego_measurements, perception) = split(&generated.measurements);
     let ego_run = estimator::run_baseline(
@@ -180,8 +180,8 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
 }
 
 #[test]
-fn association_example_keeps_two_tracker_owned_ids() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&named_example("association.yaml"))?;
+fn association_experiment_keeps_two_tracker_owned_ids() -> Result<()> {
+    let scenario = scenario::load_and_resolve(&experiment("association.yaml"))?;
     let generated = sensor::generate(&scenario)?;
     let (_, perception) = split(&generated.measurements);
     let run = tracker::run(
@@ -204,7 +204,7 @@ fn association_example_keeps_two_tracker_owned_ids() -> Result<()> {
 
 #[test]
 fn gps_reduces_position_drift() -> Result<()> {
-    let mut scenario = scenario::load_and_resolve(&example())?;
+    let mut scenario = scenario::load_and_resolve(&starter_experiment())?;
     scenario.imu.accel_bias_mps2 = 0.025;
     let generated = sensor::generate(&scenario)?;
     let (with_gps, _) = split(&generated.measurements);
@@ -254,7 +254,7 @@ fn gps_reduces_position_drift() -> Result<()> {
 
 #[test]
 fn gps_outlier_is_rejected_when_gating_is_enabled() -> Result<()> {
-    let mut scenario = scenario::load_and_resolve(&example())?;
+    let mut scenario = scenario::load_and_resolve(&starter_experiment())?;
     scenario.ego_estimator.gps_gate_sigma = 4.0;
     let generated = sensor::generate(&scenario)?;
     let (mut ego_measurements, _) = split(&generated.measurements);
@@ -290,13 +290,13 @@ fn planar_detection_round_trips() -> Result<()> {
 }
 
 #[test]
-fn advanced_examples_turn_on_one_named_effect() -> Result<()> {
-    let starter = scenario::load_and_resolve(&example())?;
+fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
+    let starter = scenario::load_and_resolve(&starter_experiment())?;
     assert!(!starter.ego_estimator.estimate_imu_bias);
     assert!(!starter.ego_estimator.timing_compensation);
     assert_eq!(starter.gps.outlier_probability, 0.0);
 
-    let bias = scenario::load_and_resolve(&named_example("imu_bias.yaml"))?;
+    let bias = scenario::load_and_resolve(&experiment("imu_bias.yaml"))?;
     let generated = sensor::generate(&bias)?;
     let (measurements, _) = split(&generated.measurements);
     let run = estimator::run_baseline(&bias.ego_estimator, &bias.imu, &bias.gps, &measurements)?;
@@ -306,7 +306,7 @@ fn advanced_examples_turn_on_one_named_effect() -> Result<()> {
             .all(|estimate| estimate.gyro_bias_z_radps.is_some())
     );
 
-    let timing = scenario::load_and_resolve(&named_example("timing.yaml"))?;
+    let timing = scenario::load_and_resolve(&experiment("timing.yaml"))?;
     let generated = sensor::generate(&timing)?;
     let (measurements, _) = split(&generated.measurements);
     let run = estimator::run_baseline(
@@ -317,7 +317,7 @@ fn advanced_examples_turn_on_one_named_effect() -> Result<()> {
     )?;
     assert!(run.timing.replayed_measurements > 0);
 
-    let outliers = scenario::load_and_resolve(&named_example("outliers.yaml"))?;
+    let outliers = scenario::load_and_resolve(&experiment("outliers.yaml"))?;
     let generated = sensor::generate(&outliers)?;
     let (measurements, _) = split(&generated.measurements);
     let run = estimator::run_baseline(
@@ -334,7 +334,7 @@ fn advanced_examples_turn_on_one_named_effect() -> Result<()> {
 fn external_outputs_can_be_scored() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let run = temp.path().join("run");
-    fusion_in_motion::run_experiment(&example(), &run)?;
+    fusion_in_motion::run_experiment(&starter_experiment(), &run)?;
 
     let ego_truth = bundle::read_ego_truth(&run.join("truth.mcap"))?;
     let ego_csv = temp.path().join("perfect-ego.csv");

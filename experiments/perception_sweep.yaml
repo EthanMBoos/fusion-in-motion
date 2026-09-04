@@ -1,3 +1,6 @@
+# Question: How do missed camera and lidar detections change object tracking?
+# Compare object error and the extra error caused by using the estimated vehicle pose.
+
 name: Camera and lidar detection rate
 base_scenario: initial.yaml
 seeds: [10, 11, 12, 13, 14]

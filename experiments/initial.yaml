@@ -1,3 +1,9 @@
+# Starter experiment
+#
+# Question: How does vehicle-position error affect object tracking?
+# Watch the vehicle and object error through the left turn from 5 to 7 seconds.
+# Change one sensor setting at a time, run again, and compare the dashboards.
+
 root_seed: 20260823
 
 world:
@@ -19,9 +25,33 @@ trajectory:
   - { id: brake, duration_s: 2.0, longitudinal_acceleration_mps2: -0.5, yaw_rate_radps: 0.0 }
   - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
 
-gps:
-  outlier_probability: 0.15
-  outlier_stddev_m: 10.0
+imu:
+  enabled: true
+  rate_hz: 100.0
+  gyro_white_noise_density_radps_sqrt_hz: 0.0008
+  accel_white_noise_density_mps2_sqrt_hz: 0.012
 
-ego_estimator:
-  gps_gate_sigma: 4.0
+gps:
+  # Try false, then restore it and try position noise of 1.0 m.
+  enabled: true
+  rate_hz: 2.0
+  horizontal_position_stddev_m: 0.25
+
+camera:
+  # Try disabling either camera or lidar.
+  # Camera gives direction; lidar also gives distance.
+  enabled: true
+  rate_hz: 10.0
+  horizontal_fov_rad: 2.8
+  max_range_m: 25.0
+  bearing_noise_stddev_rad: 0.006
+  detection_probability: 1.0
+
+lidar:
+  enabled: true
+  rate_hz: 5.0
+  horizontal_fov_rad: 6.283185307179586
+  max_range_m: 25.0
+  range_noise_stddev_m: 0.025
+  bearing_noise_stddev_rad: 0.002
+  detection_probability: 1.0

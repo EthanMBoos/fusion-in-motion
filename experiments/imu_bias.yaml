@@ -1,3 +1,11 @@
+# IMU bias experiment
+#
+# Question: Can GPS help the estimator learn when the IMU is wrong and drifting?
+# An accelerometer measures changes in motion. A gyroscope measures rotation.
+# Watch each simulated bias, its estimate, and the uncertainty around the estimate.
+# Check whether it learns the starting error, follows drift, and covers the truth.
+# Try larger starting biases or random walks, and compare several seeds.
+
 root_seed: 20260823
 
 world:
@@ -20,27 +28,12 @@ trajectory:
   - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
 
 imu:
-  enabled: true
-  rate_hz: 100.0
-  gyro_white_noise_density_radps_sqrt_hz: 0.0008
-  accel_white_noise_density_mps2_sqrt_hz: 0.012
+  # These set the starting sensor errors and how quickly those errors drift.
+  gyro_bias_radps: 0.003
+  accel_bias_mps2: 0.025
+  gyro_bias_random_walk_radps_sqrt_s: 0.00002
+  accel_bias_random_walk_mps2_sqrt_s: 0.0005
 
-gps:
-  enabled: true
-  rate_hz: 2.0
-  horizontal_position_stddev_m: 0.25
-
-camera:
-  enabled: true
-  rate_hz: 10.0
-  horizontal_fov_rad: 2.8
-  max_range_m: 25.0
-  bearing_noise_stddev_rad: 0.006
-
-lidar:
-  enabled: true
-  rate_hz: 5.0
-  horizontal_fov_rad: 6.283185307179586
-  max_range_m: 25.0
-  range_noise_stddev_m: 0.025
-  bearing_noise_stddev_rad: 0.002
+ego_estimator:
+  # Turn this off to see the result when the filter does not estimate IMU bias.
+  estimate_imu_bias: true

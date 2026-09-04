@@ -1,3 +1,6 @@
+# Question: How do GPS rate and noise change vehicle-position error?
+# Compare group means and spread. The same seeds are reused for every setting.
+
 name: GPS noise and rate
 base_scenario: initial.yaml
 seeds: [10, 11, 12, 13, 14]
