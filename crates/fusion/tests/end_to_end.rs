@@ -38,6 +38,7 @@ fn generation_is_logically_deterministic() -> Result<()> {
 fn complete_run_writes_replayable_bundle() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("run");
+    let scenario = scenario::load_and_resolve(&example())?;
     fusion_in_motion::run_experiment(&example(), &output)?;
 
     let repeated = fusion_in_motion::run_experiment(&example(), &output);
@@ -54,6 +55,7 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
         "estimates/baseline.mcap",
         "reports/baseline/metrics.json",
         "reports/baseline/timing.json",
+        "reports/baseline/assumptions.json",
         "reports/baseline/summary.md",
         "reports/baseline/visualization.rrd",
     ] {
@@ -73,12 +75,70 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     assert!(summary.contains("Normalized ANEES"));
     assert!(summary.contains("Output status:"));
     assert!(summary.contains("Valid output fraction:"));
+    assert!(summary.contains("Estimator uncertainty"));
+    assert!(summary.contains("IMU process noise: `scenario.imu`"));
     let metrics: fusion_in_motion::eval::Metrics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/metrics.json"))?)?;
     assert!(metrics.covariance_consistency.is_some());
     let timing: estimator::TimingDiagnostics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/timing.json"))?)?;
     assert!(timing.timing_compensation);
+    let assumptions: estimator::BaselineAssumptions =
+        serde_json::from_slice(&fs::read(output.join("reports/baseline/assumptions.json"))?)?;
+    assert_eq!(
+        assumptions.state_order,
+        [
+            "x",
+            "y",
+            "yaw",
+            "forward_speed",
+            "gyro_bias_z",
+            "accel_bias_x"
+        ]
+    );
+    assert_eq!(
+        assumptions.initial_covariance_diagonal,
+        [0.0001, 0.0001, 0.0001, 0.25, 0.01, 0.25]
+    );
+    assert!(assumptions.initial_cross_covariances_zero);
+    assert_eq!(assumptions.imu_process_noise_source, "scenario.imu");
+    assert_eq!(
+        assumptions
+            .imu_process_noise
+            .gyro_white_noise_density_radps_sqrt_hz,
+        scenario.imu.gyro_white_noise_density_radps_sqrt_hz
+    );
+    assert_eq!(
+        assumptions
+            .imu_process_noise
+            .accel_white_noise_density_mps2_sqrt_hz,
+        scenario.imu.accel_white_noise_density_mps2_sqrt_hz
+    );
+    assert_eq!(
+        assumptions
+            .imu_process_noise
+            .gyro_bias_random_walk_radps_sqrt_s,
+        scenario.imu.gyro_bias_random_walk_radps_sqrt_s
+    );
+    assert_eq!(
+        assumptions
+            .imu_process_noise
+            .accel_bias_random_walk_mps2_sqrt_s,
+        scenario.imu.accel_bias_random_walk_mps2_sqrt_s
+    );
+    assert!(!assumptions.uses_additional_process_noise);
+    assert_eq!(
+        assumptions.camera_bearing_stddev_rad,
+        scenario.estimator.camera_bearing_stddev_rad
+    );
+    assert_eq!(
+        assumptions.lidar_range_stddev_m,
+        scenario.estimator.lidar_range_stddev_m
+    );
+    assert_eq!(
+        assumptions.lidar_bearing_stddev_rad,
+        scenario.estimator.lidar_bearing_stddev_rad
+    );
     let measurements = bundle::read_measurements(&output.join("measurements.mcap"))?;
     assert!(
         measurements
@@ -151,10 +211,15 @@ fn timing_compensation_recovers_delayed_and_scanned_measurements() -> Result<()>
 
     let mut uncompensated_config = scenario.estimator.clone();
     uncompensated_config.timing_compensation = false;
-    let uncompensated = estimator::run_baseline(&uncompensated_config, &generated.measurements)?;
+    let uncompensated = estimator::run_baseline(
+        &uncompensated_config,
+        &scenario.imu,
+        &generated.measurements,
+    )?;
     let uncompensated_metrics = eval::evaluate(&generated.truth_states, &uncompensated.estimates)?;
 
-    let compensated = estimator::run_baseline(&scenario.estimator, &generated.measurements)?;
+    let compensated =
+        estimator::run_baseline(&scenario.estimator, &scenario.imu, &generated.measurements)?;
     let compensated_metrics = eval::evaluate(&generated.truth_states, &compensated.estimates)?;
 
     assert!(uncompensated.timing.delayed_measurements > 0);
@@ -178,7 +243,7 @@ fn fixed_lag_discards_measurements_older_than_its_history() -> Result<()> {
     scenario.camera.latency_ns = 500_000_000;
     scenario.estimator.history_duration_ns = 100_000_000;
     let generated = sensor::generate(&scenario)?;
-    let run = estimator::run_baseline(&scenario.estimator, &generated.measurements)?;
+    let run = estimator::run_baseline(&scenario.estimator, &scenario.imu, &generated.measurements)?;
 
     assert!(run.timing.discarded_measurements > 0);
     assert!(run.timing.delayed_measurements > run.timing.replayed_measurements);

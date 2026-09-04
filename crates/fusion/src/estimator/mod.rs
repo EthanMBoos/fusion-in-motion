@@ -11,8 +11,13 @@ use fusion_schema::messages::{CovarianceKind, EstimateStatus, LandmarkMap, State
 use nalgebra::Vector2;
 use serde::{Deserialize, Serialize};
 
-use crate::{bundle::MeasurementRecord, math, scenario::EstimatorConfig};
+use crate::{
+    bundle::MeasurementRecord,
+    math,
+    scenario::{EstimatorConfig, ImuConfig},
+};
 
+pub use self::propagation::ImuProcessNoise;
 use self::state::{PlanarState, StateCovariance};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,23 +38,59 @@ pub struct TimingDiagnostics {
 pub struct EstimatorRun {
     pub estimates: Vec<StateEstimate>,
     pub timing: TimingDiagnostics,
+    pub assumptions: BaselineAssumptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineAssumptions {
+    pub state_order: Vec<String>,
+    pub initial_covariance_diagonal: [f64; 6],
+    pub initial_cross_covariances_zero: bool,
+    pub imu_process_noise_source: String,
+    pub imu_process_noise: ImuProcessNoise,
+    pub uses_additional_process_noise: bool,
+    pub camera_bearing_stddev_rad: f64,
+    pub lidar_range_stddev_m: f64,
+    pub lidar_bearing_stddev_rad: f64,
+}
+
+impl BaselineAssumptions {
+    fn new(config: &EstimatorConfig, imu: &ImuConfig) -> Self {
+        let initial_covariance = state::initial_covariance();
+        Self {
+            state_order: state::STATE_NAMES.map(str::to_owned).to_vec(),
+            initial_covariance_diagonal: std::array::from_fn(|index| {
+                initial_covariance[(index, index)]
+            }),
+            initial_cross_covariances_zero: true,
+            imu_process_noise_source: "scenario.imu".to_owned(),
+            imu_process_noise: ImuProcessNoise::from(imu),
+            uses_additional_process_noise: false,
+            camera_bearing_stddev_rad: config.camera_bearing_stddev_rad,
+            lidar_range_stddev_m: config.lidar_range_stddev_m,
+            lidar_bearing_stddev_rad: config.lidar_bearing_stddev_rad,
+        }
+    }
 }
 
 pub fn run_baseline(
     config: &EstimatorConfig,
+    imu: &ImuConfig,
     measurements: &[MeasurementRecord],
 ) -> Result<EstimatorRun> {
     validate_delivery_order(measurements)?;
+    let assumptions = BaselineAssumptions::new(config, imu);
     if config.timing_compensation {
-        run_timing_compensated(config, measurements)
+        run_timing_compensated(config, measurements, assumptions)
     } else {
-        run_at_arrival(config, measurements)
+        run_at_arrival(config, measurements, assumptions)
     }
 }
 
 fn run_at_arrival(
     config: &EstimatorConfig,
     measurements: &[MeasurementRecord],
+    assumptions: BaselineAssumptions,
 ) -> Result<EstimatorRun> {
     let mut filter = BaselineEkf::new();
     let mut estimates = Vec::new();
@@ -72,6 +113,7 @@ fn run_at_arrival(
                     &mut filter.covariance,
                     &mut filter.last_imu_stamp_ns,
                     imu,
+                    &assumptions.imu_process_noise,
                 )?;
                 latest_imu_stamp_ns = Some(header.reported_stamp_ns);
                 estimates.push(filter.estimate(
@@ -99,12 +141,17 @@ fn run_at_arrival(
         }
     }
 
-    Ok(EstimatorRun { estimates, timing })
+    Ok(EstimatorRun {
+        estimates,
+        timing,
+        assumptions,
+    })
 }
 
 fn run_timing_compensated(
     config: &EstimatorConfig,
     measurements: &[MeasurementRecord],
+    assumptions: BaselineAssumptions,
 ) -> Result<EstimatorRun> {
     let mut timing = TimingDiagnostics::new(config, measurements);
     let mut accepted = Vec::with_capacity(measurements.len());
@@ -177,6 +224,7 @@ fn run_timing_compensated(
                         &mut filter.covariance,
                         &mut filter.last_imu_stamp_ns,
                         imu,
+                        &assumptions.imu_process_noise,
                     )?;
                     imu_receipt_time_ns = Some(header.receipt_time_ns);
                 }
@@ -247,7 +295,11 @@ fn run_timing_compensated(
         .filter(|estimate| estimate.revision > 0)
         .count();
 
-    Ok(EstimatorRun { estimates, timing })
+    Ok(EstimatorRun {
+        estimates,
+        timing,
+        assumptions,
+    })
 }
 
 impl TimingDiagnostics {

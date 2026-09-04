@@ -19,7 +19,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    estimator::TimingDiagnostics,
+    estimator::{BaselineAssumptions, TimingDiagnostics},
     eval::{METRIC_ALIGNMENT, METRIC_VERSION, Metrics},
     scenario::{ResolvedScenario, canonical_yaml, sha256},
 };
@@ -140,6 +140,7 @@ impl BundleManifest {
     pub fn finish(&mut self, output: &Path, _metrics: &Metrics) -> Result<()> {
         self.record(output, "reports/baseline/metrics.json")?;
         self.record(output, "reports/baseline/timing.json")?;
+        self.record(output, "reports/baseline/assumptions.json")?;
         self.record(output, "reports/baseline/summary.md")?;
         let visualization = output.join("reports/baseline/visualization.rrd");
         if visualization.is_file() {
@@ -309,12 +310,17 @@ pub fn write_reports(
     metrics: &Metrics,
     scenario: &ResolvedScenario,
     timing: &TimingDiagnostics,
+    assumptions: &BaselineAssumptions,
 ) -> Result<()> {
     write_named_reports(output, "baseline", metrics)?;
     let report_dir = output.join("reports/baseline");
     fs::write(
         report_dir.join("timing.json"),
         serde_json::to_vec_pretty(timing)?,
+    )?;
+    fs::write(
+        report_dir.join("assumptions.json"),
+        serde_json::to_vec_pretty(assumptions)?,
     )?;
     let timing_mode = if timing.timing_compensation {
         format!(
@@ -382,6 +388,23 @@ pub fn write_reports(
         timing.deskewed_lidar_scans,
         timing.deskewed_lidar_returns,
         timing.maximum_delivery_age_ns as f64 / 1.0e6,
+    ));
+    let initial = &assumptions.initial_covariance_diagonal;
+    summary.push_str(&format!(
+        "## Estimator uncertainty\n\n\
+         - Initial 1σ: x {:.3} m, y {:.3} m, yaw {:.3} rad, speed {:.3} m/s, gyro bias {:.3} rad/s, accel bias {:.3} m/s²\n\
+         - IMU process noise: `scenario.imu` white noise and bias random walk\n\
+         - Additional process noise: none\n\
+         - Measurement 1σ: camera bearing {:.4} rad, lidar range {:.4} m, lidar bearing {:.4} rad\n\n",
+        initial[0].sqrt(),
+        initial[1].sqrt(),
+        initial[2].sqrt(),
+        initial[3].sqrt(),
+        initial[4].sqrt(),
+        initial[5].sqrt(),
+        assumptions.camera_bearing_stddev_rad,
+        assumptions.lidar_range_stddev_m,
+        assumptions.lidar_bearing_stddev_rad,
     ));
     summary.push_str("## Covariance consistency\n\n");
     summary.push_str(&consistency_markdown(metrics));
@@ -466,7 +489,7 @@ fn consistency_markdown(metrics: &Metrics) -> String {
          - Marginal 95% coverage: x {:.1}%, y {:.1}%, yaw {:.1}%, forward speed {:.1}%\n\
          - Covariance order: `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`, row-major\n\
          - Error coordinates: additive world-frame x/y, wrapped world-from-body yaw, signed body-forward speed\n\
-         - Bias covariance is validated but bias consistency is not scored because realized bias truth is not stored.\n",
+         - Bias covariance is validated but bias consistency is not scored.\n",
         metrics.full_covariance_samples,
         metrics.missing_covariance_samples,
         consistency.degrees_of_freedom,

@@ -123,6 +123,7 @@ truth.mcap
 estimates/baseline.mcap
 reports/baseline/metrics.json
 reports/baseline/timing.json
+reports/baseline/assumptions.json
 reports/baseline/summary.md
 reports/baseline/visualization.rrd
 ```
@@ -177,9 +178,9 @@ labels groups with one successful run as `n=1`.
 The covariance is row-major for
 `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`. Consistency errors use
 additive world-frame x/y, wrapped world-from-body yaw, and signed body-forward
-speed. Bias blocks are validated but not scored because realized bias truth is
-not stored. The dashboard's position uncertainty line is the outer radius of
-the 2D 95% covariance ellipse, not a marginal x or y bound.
+speed. Bias blocks are validated but not scored. The dashboard's position
+uncertainty line is the outer radius of the 2D 95% covariance ellipse, not a
+marginal x or y bound.
 
 The values describe this analytic experiment. They are not claims about the
 performance of physical sensors.

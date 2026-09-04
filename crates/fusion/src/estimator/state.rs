@@ -3,6 +3,14 @@ use nalgebra::{SMatrix, SVector, Vector2};
 use crate::math;
 
 pub(super) const STATE_DIMENSION: usize = 6;
+pub(super) const STATE_NAMES: [&str; STATE_DIMENSION] = [
+    "x",
+    "y",
+    "yaw",
+    "forward_speed",
+    "gyro_bias_z",
+    "accel_bias_x",
+];
 
 const INITIAL_POSITION_VARIANCE_M2: f64 = 1.0e-4;
 const INITIAL_YAW_VARIANCE_RAD2: f64 = 1.0e-4;

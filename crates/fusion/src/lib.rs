@@ -71,7 +71,8 @@ pub(crate) fn run_resolved_experiment(
         // Replay from the persisted estimator-visible artifact. The baseline never
         // receives the in-memory truth stream or the truth MCAP path.
         let replayed_measurements = bundle::read_measurements(&output.join("measurements.mcap"))?;
-        let estimator_run = run_baseline(&scenario.estimator, &replayed_measurements)?;
+        let estimator_run =
+            run_baseline(&scenario.estimator, &scenario.imu, &replayed_measurements)?;
         bundle::write_estimates(output, &estimator_run.estimates)?;
         manifest.record_estimates(output)?;
 
@@ -80,7 +81,13 @@ pub(crate) fn run_resolved_experiment(
         let replayed_truth = bundle::read_truth_states(&output.join("truth.mcap"))?;
         let replayed_estimates = bundle::read_estimates(&output.join("estimates/baseline.mcap"))?;
         let metrics = evaluate(&replayed_truth, &replayed_estimates)?;
-        bundle::write_reports(output, &metrics, scenario, &estimator_run.timing)?;
+        bundle::write_reports(
+            output,
+            &metrics,
+            scenario,
+            &estimator_run.timing,
+            &estimator_run.assumptions,
+        )?;
         if build_visualization {
             viz::write_bundle_visualization(
                 output,

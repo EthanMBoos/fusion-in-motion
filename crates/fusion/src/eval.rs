@@ -223,7 +223,7 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
             ]
             .map(str::to_owned)
             .to_vec(),
-            error_coordinates: "additive world-frame x/y, wrapped world-from-body yaw, signed body-forward speed; bias states are not evaluated because realized bias truth is not stored"
+            error_coordinates: "additive world-frame x/y, wrapped world-from-body yaw, signed body-forward speed; bias states are not evaluated"
                 .to_owned(),
             degrees_of_freedom: CONSISTENCY_STATE_DIMENSION,
             expected_anees: CONSISTENCY_STATE_DIMENSION as f64,
