@@ -7,6 +7,7 @@ use nalgebra::Vector2;
 use crate::{math, scenario::EstimatorConfig};
 
 use super::{
+    FilterDiagnostics,
     observation::{
         LandmarkGeometry, ScalarObservation, apply_scalar_update, landmark_position,
         require_landmarks,
@@ -20,6 +21,7 @@ pub(super) fn update(
     landmarks: &BTreeMap<String, Vector2<f64>>,
     config: &EstimatorConfig,
     scan: &LidarScan,
+    diagnostics: &mut FilterDiagnostics,
 ) -> Result<()> {
     require_landmarks(landmarks)?;
 
@@ -34,7 +36,7 @@ pub(super) fn update(
         let mut range_jacobian_h = StateCorrection::zeros();
         range_jacobian_h[StateIndex::PositionWorldX.index()] = -dx_world_m / geometry.range_m;
         range_jacobian_h[StateIndex::PositionWorldY.index()] = -dy_world_m / geometry.range_m;
-        apply_scalar_update(
+        diagnostics.record(apply_scalar_update(
             state,
             covariance_p,
             ScalarObservation {
@@ -42,7 +44,7 @@ pub(super) fn update(
                 measurement_jacobian_h: range_jacobian_h,
                 measurement_variance_r: config.lidar_range_stddev_m.powi(2),
             },
-        );
+        ));
 
         let mut bearing_jacobian_h = StateCorrection::zeros();
         bearing_jacobian_h[StateIndex::PositionWorldX.index()] =
@@ -50,7 +52,7 @@ pub(super) fn update(
         bearing_jacobian_h[StateIndex::PositionWorldY.index()] =
             -dx_world_m / geometry.range_squared_m2;
         bearing_jacobian_h[StateIndex::YawWorldFromBody.index()] = -1.0;
-        apply_scalar_update(
+        diagnostics.record(apply_scalar_update(
             state,
             covariance_p,
             ScalarObservation {
@@ -58,7 +60,7 @@ pub(super) fn update(
                 measurement_jacobian_h: bearing_jacobian_h,
                 measurement_variance_r: config.lidar_bearing_stddev_rad.powi(2),
             },
-        );
+        ));
     }
 
     Ok(())

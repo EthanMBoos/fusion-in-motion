@@ -43,27 +43,42 @@ pub(super) struct ScalarObservation {
     pub(super) measurement_variance_r: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScalarUpdateResult {
+    Applied,
+    Invalid,
+}
+
 pub(super) fn apply_scalar_update(
     state: &mut PlanarState,
     covariance_p: &mut StateCovariance,
     observation: ScalarObservation,
-) {
+) -> ScalarUpdateResult {
     let ScalarObservation {
         residual,
         measurement_jacobian_h,
         measurement_variance_r,
     } = observation;
 
+    if !residual.is_finite()
+        || !measurement_jacobian_h.iter().all(|value| value.is_finite())
+        || !measurement_variance_r.is_finite()
+        || measurement_variance_r < 0.0
+    {
+        return ScalarUpdateResult::Invalid;
+    }
+
     let innovation_variance_s =
         (measurement_jacobian_h.transpose() * *covariance_p * measurement_jacobian_h)[0]
             + measurement_variance_r;
     if !innovation_variance_s.is_finite() || innovation_variance_s <= 1.0e-15 {
-        return;
+        return ScalarUpdateResult::Invalid;
     }
 
     let kalman_gain_k = *covariance_p * measurement_jacobian_h / innovation_variance_s;
     let state_correction = kalman_gain_k * residual;
-    state.apply_correction(&state_correction);
+    let mut updated_state = *state;
+    updated_state.apply_correction(&state_correction);
 
     // Joseph form is slightly longer than (I - KH)P but is much less likely to
     // lose positive-semidefiniteness through floating-point roundoff.
@@ -72,7 +87,25 @@ pub(super) fn apply_scalar_update(
     let covariance_update = identity - gain_times_jacobian_kh;
     let updated_covariance = covariance_update * *covariance_p * covariance_update.transpose()
         + kalman_gain_k * measurement_variance_r * kalman_gain_k.transpose();
-    *covariance_p = 0.5 * (updated_covariance + updated_covariance.transpose());
+    let updated_covariance = 0.5 * (updated_covariance + updated_covariance.transpose());
+    if !state_is_finite(&updated_state)
+        || !updated_covariance.iter().all(|value| value.is_finite())
+        || updated_covariance.cholesky().is_none()
+    {
+        return ScalarUpdateResult::Invalid;
+    }
+
+    *state = updated_state;
+    *covariance_p = updated_covariance;
+    ScalarUpdateResult::Applied
+}
+
+fn state_is_finite(state: &PlanarState) -> bool {
+    state.position_world_m.iter().all(|value| value.is_finite())
+        && state.yaw_world_from_body_rad.is_finite()
+        && state.forward_speed_mps.is_finite()
+        && state.gyro_bias_radps.is_finite()
+        && state.accel_bias_mps2.is_finite()
 }
 
 pub(super) fn require_landmarks(landmarks: &BTreeMap<String, Vector2<f64>>) -> Result<()> {
@@ -105,7 +138,7 @@ mod tests {
         let mut measurement_jacobian_h = StateCorrection::zeros();
         measurement_jacobian_h[StateIndex::PositionWorldX.index()] = -1.0;
 
-        apply_scalar_update(
+        let result = apply_scalar_update(
             &mut state,
             &mut covariance_p,
             ScalarObservation {
@@ -115,6 +148,7 @@ mod tests {
             },
         );
 
+        assert_eq!(result, ScalarUpdateResult::Applied);
         assert!(state.position_world_m.x < 0.0);
         for row in 0..STATE_DIMENSION {
             assert!(covariance_p[(row, row)] >= 0.0);
@@ -124,5 +158,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn invalid_update_does_not_change_state_or_covariance() {
+        let mut state = PlanarState::default();
+        let mut covariance_p = initial_covariance();
+        let original_state = state;
+        let original_covariance = covariance_p;
+
+        let result = apply_scalar_update(
+            &mut state,
+            &mut covariance_p,
+            ScalarObservation {
+                residual: f64::NAN,
+                measurement_jacobian_h: StateCorrection::zeros(),
+                measurement_variance_r: 0.01,
+            },
+        );
+
+        assert_eq!(result, ScalarUpdateResult::Invalid);
+        assert_eq!(state.position_world_m, original_state.position_world_m);
+        assert_eq!(
+            state.yaw_world_from_body_rad,
+            original_state.yaw_world_from_body_rad
+        );
+        assert_eq!(covariance_p, original_covariance);
     }
 }

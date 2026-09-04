@@ -210,9 +210,11 @@ Keep the fault type, onset, duration, and magnitude in hidden observation truth.
 Compare ordinary Gaussian updates with innovation gating, a robust loss such as
 Huber, and one graph method such as switchable constraints.
 
-Report faulty measurements accepted, healthy measurements rejected, peak and
-integrated error, time outside bounds, recovery time, and terminal failures.
-Show the bad constraint and the recovered trajectory in Rerun.
+Record each innovation, its expected variance, its normalized value, and the
+gate decision. Report faulty measurements accepted, healthy measurements
+rejected, peak and integrated error, time outside bounds, recovery time, and
+terminal failures. Show the bad constraint and the recovered trajectory in
+Rerun.
 
 ### What it demonstrates
 

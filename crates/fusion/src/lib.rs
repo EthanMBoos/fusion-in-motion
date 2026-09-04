@@ -86,6 +86,7 @@ pub(crate) fn run_resolved_experiment(
             &metrics,
             scenario,
             &estimator_run.timing,
+            &estimator_run.diagnostics,
             &estimator_run.assumptions,
         )?;
         if build_visualization {

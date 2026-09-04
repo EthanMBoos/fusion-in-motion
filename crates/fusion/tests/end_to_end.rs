@@ -55,6 +55,7 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
         "estimates/baseline.mcap",
         "reports/baseline/metrics.json",
         "reports/baseline/timing.json",
+        "reports/baseline/diagnostics.json",
         "reports/baseline/assumptions.json",
         "reports/baseline/summary.md",
         "reports/baseline/visualization.rrd",
@@ -75,6 +76,7 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     assert!(summary.contains("Normalized ANEES"));
     assert!(summary.contains("Output status:"));
     assert!(summary.contains("Valid output fraction:"));
+    assert!(summary.contains("Filter diagnostics"));
     assert!(summary.contains("Estimator uncertainty"));
     assert!(summary.contains("IMU process noise: `scenario.imu`"));
     let metrics: fusion_in_motion::eval::Metrics =
@@ -83,6 +85,14 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     let timing: estimator::TimingDiagnostics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/timing.json"))?)?;
     assert!(timing.timing_compensation);
+    let diagnostics: estimator::FilterDiagnostics =
+        serde_json::from_slice(&fs::read(output.join("reports/baseline/diagnostics.json"))?)?;
+    assert!(diagnostics.attempted_scalar_updates > 0);
+    assert_eq!(
+        diagnostics.applied_scalar_updates,
+        diagnostics.attempted_scalar_updates
+    );
+    assert_eq!(diagnostics.invalid_scalar_updates, 0);
     let assumptions: estimator::BaselineAssumptions =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/assumptions.json"))?)?;
     assert_eq!(

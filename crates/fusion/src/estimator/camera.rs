@@ -7,6 +7,7 @@ use nalgebra::Vector2;
 use crate::{math, scenario::EstimatorConfig};
 
 use super::{
+    FilterDiagnostics,
     observation::{
         LandmarkGeometry, ScalarObservation, apply_scalar_update, landmark_position,
         require_landmarks,
@@ -20,6 +21,7 @@ pub(super) fn update(
     landmarks: &BTreeMap<String, Vector2<f64>>,
     config: &EstimatorConfig,
     frame: &CameraFrame,
+    diagnostics: &mut FilterDiagnostics,
 ) -> Result<()> {
     require_landmarks(landmarks)?;
 
@@ -38,7 +40,7 @@ pub(super) fn update(
             -dx_world_m / geometry.range_squared_m2;
         measurement_jacobian_h[StateIndex::YawWorldFromBody.index()] = -1.0;
 
-        apply_scalar_update(
+        diagnostics.record(apply_scalar_update(
             state,
             covariance_p,
             ScalarObservation {
@@ -46,7 +48,7 @@ pub(super) fn update(
                 measurement_jacobian_h,
                 measurement_variance_r: config.camera_bearing_stddev_rad.powi(2),
             },
-        );
+        ));
     }
 
     Ok(())

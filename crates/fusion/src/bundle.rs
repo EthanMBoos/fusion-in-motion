@@ -19,7 +19,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    estimator::{BaselineAssumptions, TimingDiagnostics},
+    estimator::{BaselineAssumptions, FilterDiagnostics, TimingDiagnostics},
     eval::{METRIC_ALIGNMENT, METRIC_VERSION, Metrics},
     scenario::{ResolvedScenario, canonical_yaml, sha256},
 };
@@ -140,6 +140,7 @@ impl BundleManifest {
     pub fn finish(&mut self, output: &Path, _metrics: &Metrics) -> Result<()> {
         self.record(output, "reports/baseline/metrics.json")?;
         self.record(output, "reports/baseline/timing.json")?;
+        self.record(output, "reports/baseline/diagnostics.json")?;
         self.record(output, "reports/baseline/assumptions.json")?;
         self.record(output, "reports/baseline/summary.md")?;
         let visualization = output.join("reports/baseline/visualization.rrd");
@@ -310,6 +311,7 @@ pub fn write_reports(
     metrics: &Metrics,
     scenario: &ResolvedScenario,
     timing: &TimingDiagnostics,
+    diagnostics: &FilterDiagnostics,
     assumptions: &BaselineAssumptions,
 ) -> Result<()> {
     write_named_reports(output, "baseline", metrics)?;
@@ -317,6 +319,10 @@ pub fn write_reports(
     fs::write(
         report_dir.join("timing.json"),
         serde_json::to_vec_pretty(timing)?,
+    )?;
+    fs::write(
+        report_dir.join("diagnostics.json"),
+        serde_json::to_vec_pretty(diagnostics)?,
     )?;
     fs::write(
         report_dir.join("assumptions.json"),
@@ -373,6 +379,14 @@ pub fn write_reports(
         display_optional(metrics.time_to_first_valid_output_s, 3),
         display_optional(metrics.last_valid_estimate_time_s, 3),
     );
+    summary.push_str(&format!(
+        "## Filter diagnostics\n\n\
+         - Scalar observation updates: {} applied / {} attempted\n\
+         - Invalid scalar updates skipped: {}\n\n",
+        diagnostics.applied_scalar_updates,
+        diagnostics.attempted_scalar_updates,
+        diagnostics.invalid_scalar_updates,
+    ));
     summary.push_str(&format!(
         "## Timing processing\n\n\
          - Delayed measurements observed: {}\n\

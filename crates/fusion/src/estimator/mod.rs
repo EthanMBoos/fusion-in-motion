@@ -17,6 +17,7 @@ use crate::{
     scenario::{EstimatorConfig, ImuConfig},
 };
 
+use self::observation::ScalarUpdateResult;
 pub use self::propagation::ImuProcessNoise;
 use self::state::{PlanarState, StateCovariance};
 
@@ -38,7 +39,25 @@ pub struct TimingDiagnostics {
 pub struct EstimatorRun {
     pub estimates: Vec<StateEstimate>,
     pub timing: TimingDiagnostics,
+    pub diagnostics: FilterDiagnostics,
     pub assumptions: BaselineAssumptions,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FilterDiagnostics {
+    pub attempted_scalar_updates: usize,
+    pub applied_scalar_updates: usize,
+    pub invalid_scalar_updates: usize,
+}
+
+impl FilterDiagnostics {
+    fn record(&mut self, result: ScalarUpdateResult) {
+        self.attempted_scalar_updates += 1;
+        match result {
+            ScalarUpdateResult::Applied => self.applied_scalar_updates += 1,
+            ScalarUpdateResult::Invalid => self.invalid_scalar_updates += 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +114,7 @@ fn run_at_arrival(
     let mut filter = BaselineEkf::new();
     let mut estimates = Vec::new();
     let mut timing = TimingDiagnostics::new(config, measurements);
+    let mut diagnostics = FilterDiagnostics::default();
     let mut latest_imu_stamp_ns = None;
 
     for measurement in measurements {
@@ -130,6 +150,7 @@ fn run_at_arrival(
                 &filter.landmarks,
                 config,
                 frame,
+                &mut diagnostics,
             )?,
             MeasurementRecord::Lidar(scan) => lidar::update(
                 &mut filter.state,
@@ -137,6 +158,7 @@ fn run_at_arrival(
                 &filter.landmarks,
                 config,
                 scan,
+                &mut diagnostics,
             )?,
         }
     }
@@ -144,6 +166,7 @@ fn run_at_arrival(
     Ok(EstimatorRun {
         estimates,
         timing,
+        diagnostics,
         assumptions,
     })
 }
@@ -154,6 +177,7 @@ fn run_timing_compensated(
     assumptions: BaselineAssumptions,
 ) -> Result<EstimatorRun> {
     let mut timing = TimingDiagnostics::new(config, measurements);
+    let mut diagnostics = FilterDiagnostics::default();
     let mut accepted = Vec::with_capacity(measurements.len());
     let mut latest_imu_stamp_ns = None;
 
@@ -234,6 +258,7 @@ fn run_timing_compensated(
                     &filter.landmarks,
                     config,
                     frame,
+                    &mut diagnostics,
                 )?,
                 MeasurementRecord::Lidar(scan) => {
                     let state_at = |query_ns| {
@@ -250,6 +275,7 @@ fn run_timing_compensated(
                         &filter.landmarks,
                         config,
                         &scan,
+                        &mut diagnostics,
                     )?;
                 }
             }
@@ -298,6 +324,7 @@ fn run_timing_compensated(
     Ok(EstimatorRun {
         estimates,
         timing,
+        diagnostics,
         assumptions,
     })
 }

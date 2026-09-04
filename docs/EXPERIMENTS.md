@@ -57,6 +57,10 @@ and treating each lidar scan as instantaneous. The run report writes the
 selected mode and its replay, discard, revision, and deskew counts to
 `reports/baseline/timing.json`.
 
+`reports/baseline/diagnostics.json` counts scalar camera and lidar updates. An
+invalid update is skipped without changing the state or covariance and appears
+in that report.
+
 ### Motion speed
 
 `motion_speed_factor` changes how quickly the configured path is traversed. A
@@ -123,6 +127,7 @@ truth.mcap
 estimates/baseline.mcap
 reports/baseline/metrics.json
 reports/baseline/timing.json
+reports/baseline/diagnostics.json
 reports/baseline/assumptions.json
 reports/baseline/summary.md
 reports/baseline/visualization.rrd
