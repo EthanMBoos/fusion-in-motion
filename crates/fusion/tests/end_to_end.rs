@@ -71,7 +71,8 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     let summary = fs::read_to_string(output.join("reports/baseline/summary.md"))?;
     assert!(summary.contains("Covariance consistency"));
     assert!(summary.contains("Normalized ANEES"));
-    assert!(summary.contains("Outputs above the 5.0 m divergence limit"));
+    assert!(summary.contains("Output status:"));
+    assert!(summary.contains("Valid output fraction:"));
     let metrics: fusion_in_motion::eval::Metrics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/metrics.json"))?)?;
     assert!(metrics.covariance_consistency.is_some());
@@ -119,11 +120,24 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     fs::write(&external_csv, csv)?;
     let external_metrics =
         fusion_in_motion::score_estimate_csv(&output, &external_csv, "perfect-csv")?;
-    assert!(external_metrics.position_rmse_m < 1.0e-12);
-    assert!(external_metrics.yaw_rmse_rad < 1.0e-12);
+    assert!(external_metrics.position_rmse_m.unwrap() < 1.0e-12);
+    assert!(external_metrics.yaw_rmse_rad.unwrap() < 1.0e-12);
     assert!(external_metrics.covariance_consistency.is_none());
     assert!(output.join("estimates/perfect-csv.mcap").is_file());
     assert!(output.join("reports/perfect-csv/summary.md").is_file());
+
+    let diverged_csv = temp.path().join("diverged.csv");
+    fs::write(
+        &diverged_csv,
+        "estimate_time_ns,x_m,y_m,yaw_rad,status\n10000000,0.0,0.0,0.0,DIVERGED\n",
+    )?;
+    let diverged_metrics =
+        fusion_in_motion::score_estimate_csv(&output, &diverged_csv, "diverged-csv")?;
+    assert_eq!(diverged_metrics.diverged_output_count, 1);
+    assert_eq!(diverged_metrics.position_rmse_m, None);
+    let diverged_summary = fs::read_to_string(output.join("reports/diverged-csv/summary.md"))?;
+    assert!(diverged_summary.contains("Position RMSE: — m"));
+    assert!(diverged_summary.contains("1 diverged"));
     Ok(())
 }
 
@@ -138,18 +152,10 @@ fn timing_compensation_recovers_delayed_and_scanned_measurements() -> Result<()>
     let mut uncompensated_config = scenario.estimator.clone();
     uncompensated_config.timing_compensation = false;
     let uncompensated = estimator::run_baseline(&uncompensated_config, &generated.measurements)?;
-    let uncompensated_metrics = eval::evaluate(
-        &generated.truth_states,
-        &uncompensated.estimates,
-        &scenario.metrics,
-    )?;
+    let uncompensated_metrics = eval::evaluate(&generated.truth_states, &uncompensated.estimates)?;
 
     let compensated = estimator::run_baseline(&scenario.estimator, &generated.measurements)?;
-    let compensated_metrics = eval::evaluate(
-        &generated.truth_states,
-        &compensated.estimates,
-        &scenario.metrics,
-    )?;
+    let compensated_metrics = eval::evaluate(&generated.truth_states, &compensated.estimates)?;
 
     assert!(uncompensated.timing.delayed_measurements > 0);
     assert_eq!(uncompensated.timing.replayed_measurements, 0);
@@ -159,7 +165,10 @@ fn timing_compensation_recovers_delayed_and_scanned_measurements() -> Result<()>
     assert!(compensated.timing.deskewed_lidar_scans > 0);
     assert!(compensated.timing.revised_estimates > 0);
     assert_eq!(compensated.timing.discarded_measurements, 0);
-    assert!(compensated_metrics.position_rmse_m < uncompensated_metrics.position_rmse_m * 0.2);
+    assert!(
+        compensated_metrics.position_rmse_m.unwrap()
+            < uncompensated_metrics.position_rmse_m.unwrap() * 0.2
+    );
     Ok(())
 }
 
@@ -238,5 +247,9 @@ fn sweep_runs_parameter_cases_and_writes_aggregate_reports() -> Result<()> {
     let header = csv.lines().next().expect("sweep CSV header");
     assert!(header.contains("root_seed"));
     assert!(header.contains("normalized_anees"));
+    assert!(header.contains("valid_output_fraction"));
+    let summary = fs::read_to_string(output.join("reports/summary.md"))?;
+    assert!(summary.contains("single realization"));
+    assert!(summary.contains("`n=1`"));
     Ok(())
 }

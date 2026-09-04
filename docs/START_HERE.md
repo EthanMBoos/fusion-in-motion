@@ -82,18 +82,12 @@ The run report records replay, discard, revision, and deskew counts.
 
 ### Error
 
-- Position RMSE summarizes position error over the run.
-- Final error is the last sample only.
-- Maximum error catches short excursions.
-- Availability is the fraction of expected outputs that were valid.
-- The error plot compares position and yaw error with reported 95% covariance.
-  The position line is the outer radius of the 2D covariance ellipse; the yaw
-  line is the marginal 95% bound.
+The error plot compares position and yaw error with reported 95% covariance.
+The position line is the outer radius of the 2D covariance ellipse; the yaw
+line is the marginal 95% bound.
 
-The report also gives marginal 95% coverage and average normalized estimation
-error squared (ANEES) for world x/y, wrapped yaw, and signed forward speed.
-Normalized ANEES has expected mean 1.0. Use paired seeds before treating either
-coverage or ANEES as evidence of consistency.
+The run report lists error, estimator status, and covariance metrics. See
+[Results](EXPERIMENTS.md#results) for how they are calculated.
 
 ## Experiment 1: speed
 

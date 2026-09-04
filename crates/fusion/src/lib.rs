@@ -79,7 +79,7 @@ pub(crate) fn run_resolved_experiment(
         // boundary instead of sharing simulator objects.
         let replayed_truth = bundle::read_truth_states(&output.join("truth.mcap"))?;
         let replayed_estimates = bundle::read_estimates(&output.join("estimates/baseline.mcap"))?;
-        let metrics = evaluate(&replayed_truth, &replayed_estimates, &scenario.metrics)?;
+        let metrics = evaluate(&replayed_truth, &replayed_estimates)?;
         bundle::write_reports(output, &metrics, scenario, &estimator_run.timing)?;
         if build_visualization {
             viz::write_bundle_visualization(
@@ -141,7 +141,7 @@ pub fn score_estimate_csv(
 
     bundle::write_estimates_file(&estimate_path, estimator_id, &estimates)?;
     let truth = bundle::read_truth_states(&run.join("truth.mcap"))?;
-    let metrics = evaluate(&truth, &estimates, &scenario.metrics)?;
+    let metrics = evaluate(&truth, &estimates)?;
     bundle::write_named_reports(run, estimator_id, &metrics)?;
     bundle::refresh_artifact(run, &estimate_relative)?;
     bundle::refresh_artifact(run, &format!("{report_relative}/metrics.json"))?;

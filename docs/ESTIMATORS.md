@@ -54,9 +54,7 @@ Open the synchronized dashboard with the imported estimate:
 fusion view runs/run001 --estimator my-filter
 ```
 
-Availability currently assumes an output cadence comparable to the IMU/truth
-cadence. Accuracy and time coverage remain useful for lower-rate estimators,
-but their availability number will be conservative.
+See [Results](EXPERIMENTS.md#results) for the scoring rules and report files.
 
 The CSV format does not carry covariance. CSV estimates therefore receive
 accuracy metrics but no ANEES, confidence coverage, or uncertainty-bound plots.

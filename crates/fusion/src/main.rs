@@ -105,10 +105,11 @@ fn main() -> Result<()> {
             id,
         } => {
             let metrics = fusion_in_motion::score_estimate_csv(&run, &estimates_csv, &id)?;
-            println!(
-                "scored {id}: {:.6} m position RMSE",
-                metrics.position_rmse_m
-            );
+            if let Some(position_rmse_m) = metrics.position_rmse_m {
+                println!("scored {id}: {position_rmse_m:.6} m position RMSE");
+            } else {
+                println!("scored {id}: no valid estimate could be matched to truth");
+            }
             println!(
                 "report: {}",
                 run.join("reports").join(id).join("summary.md").display()

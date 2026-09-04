@@ -16,28 +16,28 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
         "VARIANT",
         "CHANGE",
     );
-    row(
+    optional_row(
         &mut out,
         "position RMSE (m)",
         baseline_metrics.position_rmse_m,
         variant_metrics.position_rmse_m,
         false,
     );
-    row(
+    optional_row(
         &mut out,
         "yaw RMSE (rad)",
         baseline_metrics.yaw_rmse_rad,
         variant_metrics.yaw_rmse_rad,
         false,
     );
-    row(
+    optional_row(
         &mut out,
         "final position error (m)",
         baseline_metrics.final_position_error_m,
         variant_metrics.final_position_error_m,
         false,
     );
-    row(
+    optional_row(
         &mut out,
         "maximum position error (m)",
         baseline_metrics.maximum_position_error_m,
@@ -46,9 +46,9 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
     );
     row(
         &mut out,
-        "availability (%)",
-        baseline_metrics.availability_fraction * 100.0,
-        variant_metrics.availability_fraction * 100.0,
+        "valid outputs (%)",
+        baseline_metrics.valid_output_fraction * 100.0,
+        variant_metrics.valid_output_fraction * 100.0,
         true,
     );
     if let (Some(baseline_consistency), Some(variant_consistency)) = (
@@ -92,7 +92,7 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
         }
     }
     out.push_str(
-        "\nPositive error deltas are worse. Positive availability deltas are better.\nNormalized ANEES should be judged against 1.0 and marginal coverage against 95%, not by delta direction alone.\n",
+        "\nPositive error deltas are worse. Positive valid-output deltas are better.\nNormalized ANEES should be judged against 1.0 and marginal coverage against 95%, not by delta direction alone.\n",
     );
     Ok(out)
 }
@@ -117,4 +117,26 @@ fn row(out: &mut String, name: &str, before: f64, after: f64, percentage_points:
     out.push_str(&format!(
         "{name:<28} {before:>10.4}    {after:>10.4}    {change:>17}\n"
     ));
+}
+
+fn optional_row(
+    out: &mut String,
+    name: &str,
+    before: Option<f64>,
+    after: Option<f64>,
+    percentage_points: bool,
+) {
+    match (before, after) {
+        (Some(before), Some(after)) => row(out, name, before, after, percentage_points),
+        _ => out.push_str(&format!(
+            "{name:<28} {:>10}    {:>10}    {:>17}\n",
+            before
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "—".to_owned()),
+            after
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "—".to_owned()),
+            "—",
+        )),
+    }
 }

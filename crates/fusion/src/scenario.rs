@@ -22,7 +22,6 @@ pub struct ResolvedScenario {
     pub camera: CameraConfig,
     pub lidar: LidarConfig,
     pub estimator: EstimatorConfig,
-    pub metrics: MetricsConfig,
 }
 
 impl ResolvedScenario {
@@ -134,13 +133,6 @@ pub struct EstimatorConfig {
     pub lidar_bearing_stddev_rad: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetricsConfig {
-    pub alignment: String,
-    pub divergence_position_error_m: f64,
-}
-
 pub fn load_and_resolve(path: &Path) -> Result<ResolvedScenario> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("failed to read scenario {}", path.display()))?;
@@ -231,14 +223,6 @@ pub fn validate(s: &ResolvedScenario) -> Result<()> {
     }
     validate_world(s)?;
     validate_estimator(s)?;
-    ensure!(
-        s.metrics.alignment == "NONE",
-        "the initial example implements only NONE alignment"
-    );
-    ensure!(
-        s.metrics.divergence_position_error_m > 0.0,
-        "divergence threshold must be positive"
-    );
     validate_trajectory(s)?;
     Ok(())
 }

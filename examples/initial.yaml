@@ -119,6 +119,3 @@ estimator:
   camera_bearing_stddev_rad: 0.008
   lidar_range_stddev_m: 0.04
   lidar_bearing_stddev_rad: 0.004
-metrics:
-  alignment: NONE
-  divergence_position_error_m: 5.0

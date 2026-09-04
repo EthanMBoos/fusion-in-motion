@@ -34,9 +34,9 @@ fusion run examples/initial.yaml --view
 ## Scenario settings
 
 Scenario YAML contains the motion, landmarks, sensor settings, random seed,
-baseline-estimator assumptions, and evaluation thresholds. Physical units are
-included in field names. Unknown fields are rejected so a misspelling does not
-silently create a different experiment.
+and baseline-estimator assumptions. Physical units are included in field
+names. Unknown fields are rejected so a misspelling does not silently create a
+different experiment.
 
 Useful settings include:
 
@@ -146,11 +146,33 @@ conclusion from a comparison.
 
 ## Results
 
-The evaluator reports position and yaw error, final drift, availability, time
-coverage, divergence, and time to first valid output. For estimators that emit
-a full covariance, it also validates the matrix and reports ANEES plus marginal
-95% coverage for x, y, yaw, and forward speed. Sweep reports retain the
-parameter values and root seed for paired comparisons.
+The evaluator reads these fields from each `StateEstimate`:
+
+| Field | Used for |
+| --- | --- |
+| `estimate_time_ns` | Truth is interpolated at this time. Times outside the truth interval are not scored. |
+| `emission_time_ns` | Time to first valid output. |
+| `pose_w_b`, `velocity_world_mps` | Position and yaw RMSE, final error, maximum error, and final drift. |
+| `status` | Counted as reported. Only `VALID` outputs are scored. |
+| `covariance_kind`, `covariance` | A full covariance enables ANEES and marginal 95% coverage for x, y, yaw, and forward speed. |
+
+Valid-output fraction is `VALID` outputs divided by all estimator outputs. It
+does not assume an output rate. If nothing can be scored, error fields are
+`null` in JSON and `—` in Markdown.
+
+The estimator reports its status. The evaluator reports error. An exercise
+decides what error is acceptable; scenario YAML has no pass/fail threshold.
+
+Run results are written to:
+
+```text
+reports/<estimator>/metrics.json
+reports/<estimator>/summary.md
+```
+
+Sweep case data is in `reports/results.csv` and `reports/results.json`.
+`reports/summary.md` shows each group's mean and sample standard deviation and
+labels groups with one successful run as `n=1`.
 
 The covariance is row-major for
 `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`. Consistency errors use

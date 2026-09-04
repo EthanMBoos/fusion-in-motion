@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     estimator::TimingDiagnostics,
-    eval::{METRIC_VERSION, Metrics},
+    eval::{METRIC_ALIGNMENT, METRIC_VERSION, Metrics},
     scenario::{ResolvedScenario, canonical_yaml, sha256},
 };
 
@@ -121,7 +121,7 @@ impl BundleManifest {
             random_version: "fusion-deterministic-random-1".to_owned(),
             estimator_id: scenario.estimator.id.clone(),
             metric_version: METRIC_VERSION.to_owned(),
-            metric_alignment: scenario.metrics.alignment.clone(),
+            metric_alignment: METRIC_ALIGNMENT.to_owned(),
             artifacts: BTreeMap::new(),
         })
     }
@@ -332,13 +332,16 @@ pub fn write_reports(
          - Estimator timing: {}\n\
          - Random seed: {}\n\n\
          ## Result\n\n\
-         - Position RMSE: {:.3} m (position error over the run)\n\
-         - Yaw RMSE: {:.3} rad (heading error over the run)\n\
-         - Final position error: {:.3} m\n\
-         - Maximum position error: {:.3} m\n\
-         - Availability: {:.1}% (valid outputs at the expected output cadence)\n\
-         - Outputs above the {:.1} m divergence limit: {}\n\
-         - Time coverage: {:.1}%\n\n",
+         - Position RMSE: {} m (position error over the run)\n\
+         - Yaw RMSE: {} rad (heading error over the run)\n\
+         - Final position error: {} m\n\
+         - Maximum position error: {} m\n\
+         - Matched valid outputs: {} / {}\n\
+         - Valid output fraction: {:.1}%\n\
+         - Output status: {} valid, {} initializing, {} diverged, {} unspecified, {} unknown\n\
+         - Valid outputs outside the truth interval: {}\n\
+         - First valid output: {} s\n\
+         - Last valid estimate time: {} s\n\n",
         scenario.motion_speed_factor,
         scenario.camera.rate_hz,
         scenario.camera.latency_ns as f64 / 1.0e6,
@@ -348,14 +351,21 @@ pub fn write_reports(
         scenario.lidar.scan_duration_ns as f64 / 1.0e6,
         timing_mode,
         scenario.root_seed,
-        metrics.position_rmse_m,
-        metrics.yaw_rmse_rad,
-        metrics.final_position_error_m,
-        metrics.maximum_position_error_m,
-        metrics.availability_fraction * 100.0,
-        scenario.metrics.divergence_position_error_m,
+        display_optional(metrics.position_rmse_m, 3),
+        display_optional(metrics.yaw_rmse_rad, 3),
+        display_optional(metrics.final_position_error_m, 3),
+        display_optional(metrics.maximum_position_error_m, 3),
+        metrics.matched_samples,
+        metrics.valid_output_count,
+        metrics.valid_output_fraction * 100.0,
+        metrics.valid_output_count,
+        metrics.initializing_output_count,
         metrics.diverged_output_count,
-        metrics.time_coverage_fraction * 100.0,
+        metrics.unspecified_output_count,
+        metrics.unknown_status_output_count,
+        metrics.unmatched_valid_output_count,
+        display_optional(metrics.time_to_first_valid_output_s, 3),
+        display_optional(metrics.last_valid_estimate_time_s, 3),
     );
     summary.push_str(&format!(
         "## Timing processing\n\n\
@@ -398,34 +408,46 @@ pub fn write_named_reports(output: &Path, name: &str, metrics: &Metrics) -> Resu
         "# Fusion in Motion baseline result\n\n\
          - Estimator: `{}`\n\
          - Alignment: `{}`\n\
-         - Matched samples: {} / {}\n\
-         - Position RMSE: {:.6} m\n\
-         - Yaw RMSE: {:.6} rad\n\
-         - Final position error: {:.6} m\n\
-         - Final drift per distance: {:.6}\n\
-         - Availability: {:.2}%\n\
-         - Time coverage: {:.2}%\n\
-         - Invalid outputs: {}\n\
-         - Diverged outputs: {}\n\
-         - Maximum position error: {:.6} m\n\n\
+         - Matched valid outputs: {} / {}\n\
+         - Position RMSE: {} m\n\
+         - Yaw RMSE: {} rad\n\
+         - Final position error: {} m\n\
+         - Final drift per distance: {}\n\
+         - Maximum position error: {} m\n\
+         - Valid output fraction: {:.2}%\n\
+         - Output status: {} valid, {} initializing, {} diverged, {} unspecified, {} unknown\n\
+         - Valid outputs outside the truth interval: {}\n\
+         - First valid output: {} s\n\
+         - Last valid estimate time: {} s\n\n\
          ## Covariance consistency\n\n",
         metrics.estimator_id,
         metrics.alignment,
         metrics.matched_samples,
-        metrics.estimate_samples,
-        metrics.position_rmse_m,
-        metrics.yaw_rmse_rad,
-        metrics.final_position_error_m,
-        metrics.final_drift_per_distance,
-        metrics.availability_fraction * 100.0,
-        metrics.time_coverage_fraction * 100.0,
-        metrics.invalid_output_count,
+        metrics.valid_output_count,
+        display_optional(metrics.position_rmse_m, 6),
+        display_optional(metrics.yaw_rmse_rad, 6),
+        display_optional(metrics.final_position_error_m, 6),
+        display_optional(metrics.final_drift_per_distance, 6),
+        display_optional(metrics.maximum_position_error_m, 6),
+        metrics.valid_output_fraction * 100.0,
+        metrics.valid_output_count,
+        metrics.initializing_output_count,
         metrics.diverged_output_count,
-        metrics.maximum_position_error_m,
+        metrics.unspecified_output_count,
+        metrics.unknown_status_output_count,
+        metrics.unmatched_valid_output_count,
+        display_optional(metrics.time_to_first_valid_output_s, 6),
+        display_optional(metrics.last_valid_estimate_time_s, 6),
     );
     summary.push_str(&consistency_markdown(metrics));
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
+}
+
+fn display_optional(value: Option<f64>, precision: usize) -> String {
+    value
+        .map(|value| format!("{value:.precision$}"))
+        .unwrap_or_else(|| "—".to_owned())
 }
 
 fn consistency_markdown(metrics: &Metrics) -> String {
