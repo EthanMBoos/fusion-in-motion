@@ -92,6 +92,9 @@ pub(super) fn deskew(
         )
     })?;
     let mut deskewed = scan.clone();
+
+    // TODO: Rigorous long-scan consistency studies should propagate pose-history
+    // uncertainty through this transform. This deskew treats those poses as exact.
     for hit in &mut deskewed.returns {
         ensure!(
             (0..=header.acquisition_duration_ns).contains(&hit.acquisition_offset_ns),
