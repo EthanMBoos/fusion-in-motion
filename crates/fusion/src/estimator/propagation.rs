@@ -33,29 +33,21 @@ pub fn propagate_imu(
     imu: &ImuSample,
     noise: &ImuProcessNoise,
 ) -> Result<()> {
-    let header = imu
-        .header
+    let time = imu
+        .time
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("IMU record has no header"))?;
-    let gyro = imu
-        .angular_rate_radps
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("IMU record has no angular rate"))?;
-    let accel = imu
-        .specific_force_mps2
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("IMU record has no specific force"))?;
-    let Some(previous_stamp_ns) = last_imu_stamp_ns.replace(header.reported_stamp_ns) else {
+        .ok_or_else(|| anyhow::anyhow!("IMU record has no time"))?;
+    let Some(previous_stamp_ns) = last_imu_stamp_ns.replace(time.measurement_time_ns) else {
         return Ok(());
     };
-    let dt_s = (header.reported_stamp_ns - previous_stamp_ns) as f64 * 1.0e-9;
+    let dt_s = (time.measurement_time_ns - previous_stamp_ns) as f64 * 1.0e-9;
     ensure!(
         dt_s > 0.0,
         "ego estimator requires increasing IMU timestamps"
     );
 
-    let yaw_rate = gyro.z - state.gyro_bias_radps;
-    let forward_accel = accel.x - state.accel_bias_mps2;
+    let yaw_rate = imu.yaw_rate_radps - state.gyro_bias_radps;
+    let forward_accel = imu.forward_acceleration_mps2 - state.accel_bias_mps2;
     let yaw = state.yaw_world_from_body_rad;
     let speed = state.forward_speed_mps;
     let distance = speed * dt_s + 0.5 * forward_accel * dt_s * dt_s;

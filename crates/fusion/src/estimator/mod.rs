@@ -4,10 +4,7 @@ mod propagation;
 pub mod state;
 
 use anyhow::{Result, ensure};
-use fusion_schema::messages::{
-    CovarianceKind, EgoStateEstimate, EgoStateModel, EstimateStatus, GpsFix, ImuSample,
-    RecordHeader, Vec3,
-};
+use fusion_schema::messages::{EgoStateEstimate, GpsFix, ImuSample, MeasurementTime};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -21,19 +18,19 @@ use self::{
     state::{PlanarState, StateCovariance},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EgoMeasurement {
     Imu(ImuSample),
     Gps(GpsFix),
 }
 
 impl EgoMeasurement {
-    pub fn header(&self) -> &RecordHeader {
+    pub fn time(&self) -> &MeasurementTime {
         match self {
-            Self::Imu(value) => value.header.as_ref(),
-            Self::Gps(value) => value.header.as_ref(),
+            Self::Imu(value) => value.time.as_ref(),
+            Self::Gps(value) => value.time.as_ref(),
         }
-        .expect("generated ego measurements have headers")
+        .expect("generated ego measurements have time")
     }
 }
 
@@ -108,8 +105,11 @@ pub fn run_baseline(
     validate_delivery_order(measurements)?;
     let initial_covariance = state::initial_covariance(config);
     let assumptions = BaselineAssumptions {
-        state_order: state::STATE_NAMES.map(str::to_owned).to_vec(),
-        initial_covariance_diagonal: (0..state::STATE_DIMENSION)
+        state_order: state::STATE_NAMES[..if config.estimate_imu_bias { 6 } else { 4 }]
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+        initial_covariance_diagonal: (0..if config.estimate_imu_bias { 6 } else { 4 })
             .map(|index| initial_covariance[(index, index)])
             .collect(),
         imu_process_noise: ImuProcessNoise::from(imu),
@@ -134,19 +134,18 @@ fn run_at_arrival(
     let mut latest_imu_stamp_ns = None;
     let mut delayed = 0;
     for measurement in measurements {
-        let header = measurement.header();
-        if latest_imu_stamp_ns.is_some_and(|time| header.reported_stamp_ns < time) {
+        let time = measurement.time();
+        if latest_imu_stamp_ns.is_some_and(|latest| time.measurement_time_ns < latest) {
             delayed += 1;
         }
         match measurement {
             EgoMeasurement::Imu(imu) => {
                 filter.propagate(imu, &assumptions.imu_process_noise)?;
-                latest_imu_stamp_ns = Some(header.reported_stamp_ns);
+                latest_imu_stamp_ns = Some(time.measurement_time_ns);
                 estimates.push(filter.estimate(
                     config,
-                    header.reported_stamp_ns,
-                    header.receipt_time_ns,
-                    0,
+                    time.measurement_time_ns,
+                    time.arrival_time_ns,
                 ));
             }
             EgoMeasurement::Gps(fix) => gps::update(
@@ -179,9 +178,9 @@ fn run_at_measurement_time(
     let mut replayed = 0;
     let mut discarded = 0;
     for measurement in measurements {
-        let header = measurement.header();
+        let time = measurement.time();
         let age = latest_imu_stamp_ns
-            .map(|time: i64| time.saturating_sub(header.reported_stamp_ns))
+            .map(|latest: i64| latest.saturating_sub(time.measurement_time_ns))
             .unwrap_or(0);
         if age > 0 {
             delayed += 1;
@@ -196,35 +195,36 @@ fn run_at_measurement_time(
         }
         if matches!(measurement, EgoMeasurement::Imu(_)) {
             latest_imu_stamp_ns = Some(
-                latest_imu_stamp_ns.map_or(header.reported_stamp_ns, |time: i64| {
-                    time.max(header.reported_stamp_ns)
+                latest_imu_stamp_ns.map_or(time.measurement_time_ns, |time: i64| {
+                    time.max(measurement.time().measurement_time_ns)
                 }),
             );
         }
     }
     accepted.sort_by_key(|measurement| {
         (
-            measurement.header().reported_stamp_ns,
+            measurement.time().measurement_time_ns,
             measurement_priority(measurement),
-            measurement.header().delivery_index,
+            measurement.time().arrival_time_ns,
         )
     });
 
     let mut filter = BaselineEkf::new(config);
     let mut diagnostics = FilterDiagnostics::default();
     let mut estimates = Vec::new();
+    let mut revised = 0;
     let mut index = 0;
     while index < accepted.len() {
-        let stamp = accepted[index].header().reported_stamp_ns;
+        let stamp = accepted[index].time().measurement_time_ns;
         let end = index
             + accepted[index..]
-                .partition_point(|measurement| measurement.header().reported_stamp_ns == stamp);
+                .partition_point(|measurement| measurement.time().measurement_time_ns == stamp);
         let mut emission = None;
         for measurement in &accepted[index..end] {
             match measurement {
                 EgoMeasurement::Imu(imu) => {
                     filter.propagate(imu, &assumptions.imu_process_noise)?;
-                    emission = Some(measurement.header().receipt_time_ns);
+                    emission = Some(measurement.time().arrival_time_ns);
                 }
                 EgoMeasurement::Gps(fix) => gps::update(
                     &mut filter.state,
@@ -238,25 +238,22 @@ fn run_at_measurement_time(
         }
         if let Some(initial_emission) = emission {
             let mut final_emission = initial_emission;
-            let mut revision = 0;
+            let mut was_revised = false;
             for measurement in &accepted {
-                let header = measurement.header();
+                let time = measurement.time();
                 if matches!(measurement, EgoMeasurement::Gps(_))
-                    && header.reported_stamp_ns <= stamp
-                    && header.receipt_time_ns > initial_emission
+                    && time.measurement_time_ns <= stamp
+                    && time.arrival_time_ns > initial_emission
                 {
-                    final_emission = final_emission.max(header.receipt_time_ns);
-                    revision += 1;
+                    final_emission = final_emission.max(time.arrival_time_ns);
+                    was_revised = true;
                 }
             }
-            estimates.push(filter.estimate(config, stamp, final_emission, revision));
+            revised += usize::from(was_revised);
+            estimates.push(filter.estimate(config, stamp, final_emission));
         }
         index = end;
     }
-    let revised = estimates
-        .iter()
-        .filter(|estimate| estimate.revision > 0)
-        .count();
     Ok(EstimatorRun {
         estimates,
         timing: timing(config, measurements, delayed, replayed, discarded, revised),
@@ -284,10 +281,9 @@ fn timing(
         maximum_delivery_age_ns: measurements
             .iter()
             .map(|measurement| {
-                let header = measurement.header();
-                header
-                    .receipt_time_ns
-                    .saturating_sub(header.reported_stamp_ns)
+                let time = measurement.time();
+                time.arrival_time_ns
+                    .saturating_sub(time.measurement_time_ns)
             })
             .max()
             .unwrap_or(0),
@@ -304,11 +300,11 @@ fn measurement_priority(measurement: &EgoMeasurement) -> u8 {
 fn validate_delivery_order(measurements: &[EgoMeasurement]) -> Result<()> {
     let mut previous = None;
     for measurement in measurements {
-        let delivery = measurement.header().delivery_index;
+        let delivery = measurement.time().arrival_time_ns;
         if let Some(previous) = previous {
             ensure!(
-                delivery > previous,
-                "ego measurement delivery indices are not increasing"
+                delivery >= previous,
+                "ego measurements are not in arrival order"
             );
         }
         previous = Some(delivery);
@@ -345,37 +341,30 @@ impl BaselineEkf {
         &self,
         config: &EgoEstimatorConfig,
         estimate_time_ns: i64,
-        emission_time_ns: i64,
-        revision: u64,
+        available_time_ns: i64,
     ) -> EgoStateEstimate {
         let yaw = self.state.yaw_world_from_body_rad;
         EgoStateEstimate {
-            estimator_id: config.id.clone(),
             estimate_time_ns,
-            emission_time_ns,
-            pose_w_b: Some(math::yaw_pose(
+            available_time_ns,
+            pose_world: Some(math::pose2(
                 self.state.position_world_m.x,
                 self.state.position_world_m.y,
                 yaw,
-                &config.output_world_frame,
-                &config.output_body_frame,
             )),
-            velocity_world_mps: Some(Vec3 {
-                x: self.state.forward_speed_mps * yaw.cos(),
-                y: self.state.forward_speed_mps * yaw.sin(),
-                z: 0.0,
-            }),
-            status: EstimateStatus::Valid as i32,
-            covariance_kind: CovarianceKind::Full as i32,
-            covariance: (0..state::STATE_DIMENSION)
+            forward_speed_mps: self.state.forward_speed_mps,
+            state_covariance: (0..if config.estimate_imu_bias { 6 } else { 4 })
                 .flat_map(|row| {
-                    (0..state::STATE_DIMENSION).map(move |column| self.covariance[(row, column)])
+                    (0..if config.estimate_imu_bias { 6 } else { 4 })
+                        .map(move |column| self.covariance[(row, column)])
                 })
                 .collect(),
-            revision,
-            state_model: EgoStateModel::Planar as i32,
-            gyro_bias_z_radps: Some(self.state.gyro_bias_radps),
-            accel_bias_x_mps2: Some(self.state.accel_bias_mps2),
+            gyro_bias_z_radps: config
+                .estimate_imu_bias
+                .then_some(self.state.gyro_bias_radps),
+            accel_bias_x_mps2: config
+                .estimate_imu_bias
+                .then_some(self.state.accel_bias_mps2),
         }
     }
 }

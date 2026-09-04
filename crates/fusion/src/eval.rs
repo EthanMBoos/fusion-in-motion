@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use fusion_schema::messages::{
-    EgoStateEstimate, EgoTruthState, EstimateStatus, ObjectTrack, ObjectTruthState,
-    ObservationTruth,
+    EgoStateEstimate, EgoTruthState, ImuBiasTruth, ObjectTrack, ObjectTruthState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +9,6 @@ use crate::{math, scenario::ResolvedScenario};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EgoMetrics {
-    pub estimator_id: String,
     pub estimate_samples: usize,
     pub matched_samples: usize,
     pub position_rmse_m: f64,
@@ -19,7 +17,6 @@ pub struct EgoMetrics {
     pub maximum_position_error_m: f64,
     pub time_coverage_fraction: f64,
     pub invalid_output_count: usize,
-    pub reported_diverged_count: usize,
     pub position_threshold_exceeded_count: usize,
     pub gyro_bias_rmse_radps: Option<f64>,
     pub accel_bias_rmse_mps2: Option<f64>,
@@ -29,7 +26,6 @@ pub struct EgoMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackMetrics {
-    pub tracker_id: String,
     pub ego_source: String,
     pub track_samples: usize,
     pub matched_samples: usize,
@@ -40,7 +36,6 @@ pub struct TrackMetrics {
     pub final_position_error_m: f64,
     pub maximum_position_error_m: f64,
     pub time_coverage_fraction: f64,
-    pub reported_diverged_count: usize,
     pub position_threshold_exceeded_count: usize,
 }
 
@@ -57,12 +52,12 @@ pub fn evaluate(
     scenario: &ResolvedScenario,
     ego_truth: &[EgoTruthState],
     object_truth: &[ObjectTruthState],
-    observation_truth: &[ObservationTruth],
+    imu_bias_truth: &[ImuBiasTruth],
     estimates: &[EgoStateEstimate],
     estimated_ego_tracks: &[ObjectTrack],
     truth_ego_tracks: &[ObjectTrack],
 ) -> RunMetrics {
-    let ego = evaluate_ego(scenario, ego_truth, observation_truth, estimates);
+    let ego = evaluate_ego(scenario, ego_truth, imu_bias_truth, estimates);
     let tracks_with_estimated_ego = evaluate_tracks(
         scenario,
         ego_truth,
@@ -92,7 +87,7 @@ pub fn evaluate(
 pub fn evaluate_ego(
     scenario: &ResolvedScenario,
     truth: &[EgoTruthState],
-    observation_truth: &[ObservationTruth],
+    bias_truth: &[ImuBiasTruth],
     estimates: &[EgoStateEstimate],
 ) -> EgoMetrics {
     let mut position_squared = 0.0;
@@ -101,7 +96,6 @@ pub fn evaluate_ego(
     let mut final_error = 0.0;
     let mut maximum_error: f64 = 0.0;
     let mut invalid = 0;
-    let mut reported_diverged = 0;
     let mut threshold_exceeded = 0;
     let mut first_time = None;
     let mut last_time = None;
@@ -112,20 +106,9 @@ pub fn evaluate_ego(
     let mut gyro_covered = 0;
     let mut accel_covered = 0;
 
-    let bias_truth = observation_truth
-        .iter()
-        .filter_map(|observation| {
-            let effects = observation.imu_effects.as_ref()?;
-            Some((observation.acquisition_end_truth_ns, effects))
-        })
-        .collect::<Vec<_>>();
-
     for estimate in estimates {
-        if estimate.status == EstimateStatus::Diverged as i32 {
-            reported_diverged += 1;
-        }
         let (Some(estimate_pose), Some(truth_state)) = (
-            estimate.pose_w_b.as_ref(),
+            estimate.pose_world.as_ref(),
             nearest_ego_truth(
                 truth,
                 estimate.estimate_time_ns,
@@ -137,9 +120,9 @@ pub fn evaluate_ego(
         };
         let (Some(estimate_position), Some(truth_pose), Some(truth_position)) = (
             estimate_pose.position.as_ref(),
-            truth_state.pose_w_b.as_ref(),
+            truth_state.pose_world.as_ref(),
             truth_state
-                .pose_w_b
+                .pose_world
                 .as_ref()
                 .and_then(|pose| pose.position.as_ref()),
         ) else {
@@ -148,8 +131,7 @@ pub fn evaluate_ego(
         };
         let error =
             (estimate_position.x - truth_position.x).hypot(estimate_position.y - truth_position.y);
-        let yaw_error =
-            math::wrap_angle(math::yaw_from_pose(estimate_pose) - math::yaw_from_pose(truth_pose));
+        let yaw_error = math::wrap_angle(estimate_pose.yaw_rad - truth_pose.yaw_rad);
         position_squared += error * error;
         yaw_squared += yaw_error * yaw_error;
         final_error = error;
@@ -159,26 +141,24 @@ pub fn evaluate_ego(
         first_time.get_or_insert(estimate.estimate_time_ns);
         last_time = Some(estimate.estimate_time_ns);
 
-        if let (Some(gyro_estimate), Some(accel_estimate), Some((_, effects))) = (
+        if let (Some(gyro_estimate), Some(accel_estimate), Some(bias)) = (
             estimate.gyro_bias_z_radps,
             estimate.accel_bias_x_mps2,
             nearest_by_time(
-                &bias_truth,
+                bias_truth,
                 estimate.estimate_time_ns,
                 scenario.metrics.max_truth_match_gap_ns,
-                |(time_ns, _)| *time_ns,
+                |bias| bias.time_ns,
             ),
-        ) && let (Some(gyro), Some(accel)) = (
-            effects.gyro_bias_body_radps.as_ref(),
-            effects.accel_bias_body_mps2.as_ref(),
         ) {
-            let gyro_error = gyro_estimate - gyro.z;
-            let accel_error = accel_estimate - accel.x;
+            let gyro_error = gyro_estimate - bias.gyro_bias_z_radps;
+            let accel_error = accel_estimate - bias.accel_bias_x_mps2;
             gyro_bias_squared += gyro_error * gyro_error;
             accel_bias_squared += accel_error * accel_error;
-            if estimate.covariance.len() == 36 {
-                let gyro_variance = estimate.covariance[4 * 6 + 4];
-                let accel_variance = estimate.covariance[5 * 6 + 5];
+            let covariance = &estimate.state_covariance;
+            if covariance.len() == 36 {
+                let gyro_variance = covariance[4 * 6 + 4];
+                let accel_variance = covariance[5 * 6 + 5];
                 if gyro_variance.is_finite()
                     && accel_variance.is_finite()
                     && gyro_variance >= 0.0
@@ -192,12 +172,9 @@ pub fn evaluate_ego(
             bias_samples += 1;
         }
     }
-    let duration_ns = truth.last().map_or(0, |state| state.truth_time_ns)
-        - truth.first().map_or(0, |state| state.truth_time_ns);
+    let duration_ns = truth.last().map_or(0, |state| state.time_ns)
+        - truth.first().map_or(0, |state| state.time_ns);
     EgoMetrics {
-        estimator_id: estimates
-            .first()
-            .map_or("none".to_owned(), |estimate| estimate.estimator_id.clone()),
         estimate_samples: estimates.len(),
         matched_samples: matched,
         position_rmse_m: rms(position_squared, matched),
@@ -206,7 +183,6 @@ pub fn evaluate_ego(
         maximum_position_error_m: maximum_error,
         time_coverage_fraction: coverage(first_time, last_time, duration_ns),
         invalid_output_count: invalid,
-        reported_diverged_count: reported_diverged,
         position_threshold_exceeded_count: threshold_exceeded,
         gyro_bias_rmse_radps: (bias_samples > 0).then(|| rms(gyro_bias_squared, bias_samples)),
         accel_bias_rmse_mps2: (bias_samples > 0).then(|| rms(accel_bias_squared, bias_samples)),
@@ -225,31 +201,18 @@ pub fn evaluate_tracks(
     tracks: &[ObjectTrack],
     ego_source: &str,
 ) -> TrackMetrics {
-    let association_to_object = scenario
-        .world
-        .objects
-        .iter()
-        .map(|object| (&object.association_key, &object.id))
-        .collect::<BTreeMap<_, _>>();
     let mut position_squared = 0.0;
     let mut velocity_squared = 0.0;
     let mut relative_squared = 0.0;
     let mut relative_matched = 0;
     let mut matched = 0;
     let mut maximum_error: f64 = 0.0;
-    let mut reported_diverged = 0;
     let mut threshold_exceeded = 0;
     let mut objects = BTreeMap::<String, (i64, i64, f64)>::new();
     for track in tracks {
-        if track.status == EstimateStatus::Diverged as i32 {
-            reported_diverged += 1;
-        }
-        let Some(object_id) = association_to_object.get(&track.association_key) else {
-            continue;
-        };
         let Some(truth) = nearest_object_truth(
             object_truth,
-            object_id,
+            &track.track_key,
             track.estimate_time_ns,
             scenario.metrics.max_truth_match_gap_ns,
         ) else {
@@ -272,7 +235,7 @@ pub fn evaluate_tracks(
             usize::from(position_error > scenario.metrics.track_divergence_position_error_m);
         matched += 1;
         objects
-            .entry((*object_id).clone())
+            .entry(track.track_key.clone())
             .and_modify(|range| {
                 if track.estimate_time_ns >= range.1 {
                     range.1 = track.estimate_time_ns;
@@ -297,8 +260,8 @@ pub fn evaluate_tracks(
             relative_matched += 1;
         }
     }
-    let truth_duration = ego_truth.last().map_or(0, |state| state.truth_time_ns)
-        - ego_truth.first().map_or(0, |state| state.truth_time_ns);
+    let truth_duration = ego_truth.last().map_or(0, |state| state.time_ns)
+        - ego_truth.first().map_or(0, |state| state.time_ns);
     let time_coverage_fraction = if objects.is_empty() || truth_duration <= 0 {
         0.0
     } else {
@@ -319,9 +282,6 @@ pub fn evaluate_tracks(
             .sqrt()
     };
     TrackMetrics {
-        tracker_id: tracks
-            .first()
-            .map_or("none".to_owned(), |track| track.tracker_id.clone()),
         ego_source: ego_source.to_owned(),
         track_samples: tracks.len(),
         matched_samples: matched,
@@ -332,7 +292,6 @@ pub fn evaluate_tracks(
         final_position_error_m,
         maximum_position_error_m: maximum_error,
         time_coverage_fraction,
-        reported_diverged_count: reported_diverged,
         position_threshold_exceeded_count: threshold_exceeded,
     }
 }
@@ -348,26 +307,26 @@ fn relative_position_error(
     let track_position = track.position_world_m.as_ref()?;
     let object_position = object_truth.position_world_m.as_ref()?;
     let truth_ego = nearest_ego_truth(ego_truth, track.estimate_time_ns, max_gap_ns)?;
-    let truth_pose = truth_ego.pose_w_b.as_ref()?;
+    let truth_pose = truth_ego.pose_world.as_ref()?;
     let truth_ego_position = truth_pose.position.as_ref()?;
     let (ego_x, ego_y, ego_yaw) = if ego_source == "truth" {
         (
             truth_ego_position.x,
             truth_ego_position.y,
-            math::yaw_from_pose(truth_pose),
+            truth_pose.yaw_rad,
         )
     } else {
         let estimate = nearest_estimate(ego_estimates, track.estimate_time_ns, max_gap_ns)?;
-        let pose = estimate.pose_w_b.as_ref()?;
+        let pose = estimate.pose_world.as_ref()?;
         let position = pose.position.as_ref()?;
-        (position.x, position.y, math::yaw_from_pose(pose))
+        (position.x, position.y, pose.yaw_rad)
     };
     let estimated_relative =
         rotate_into_body(track_position.x - ego_x, track_position.y - ego_y, ego_yaw);
     let truth_relative = rotate_into_body(
         object_position.x - truth_ego_position.x,
         object_position.y - truth_ego_position.y,
-        math::yaw_from_pose(truth_pose),
+        truth_pose.yaw_rad,
     );
     Some((estimated_relative.0 - truth_relative.0).hypot(estimated_relative.1 - truth_relative.1))
 }
@@ -384,7 +343,7 @@ fn nearest_ego_truth(
     time_ns: i64,
     max_gap_ns: i64,
 ) -> Option<&EgoTruthState> {
-    nearest_by_time(truth, time_ns, max_gap_ns, |state| state.truth_time_ns)
+    nearest_by_time(truth, time_ns, max_gap_ns, |state| state.time_ns)
 }
 
 fn nearest_estimate(
@@ -399,15 +358,15 @@ fn nearest_estimate(
 
 fn nearest_object_truth<'a>(
     truth: &'a [ObjectTruthState],
-    object_id: &str,
+    track_key: &str,
     time_ns: i64,
     max_gap_ns: i64,
 ) -> Option<&'a ObjectTruthState> {
     truth
         .iter()
-        .filter(|state| state.object_id == object_id)
-        .min_by_key(|state| state.truth_time_ns.abs_diff(time_ns))
-        .filter(|state| state.truth_time_ns.abs_diff(time_ns) <= max_gap_ns as u64)
+        .filter(|state| state.track_key == track_key)
+        .min_by_key(|state| state.time_ns.abs_diff(time_ns))
+        .filter(|state| state.time_ns.abs_diff(time_ns) <= max_gap_ns as u64)
 }
 
 fn nearest_by_time<T>(

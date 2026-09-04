@@ -37,7 +37,6 @@ pub struct SweepReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct SweepCaseResult {
     pub case_id: String,
-    pub run_id: String,
     pub root_seed: u64,
     pub parameters: BTreeMap<String, Value>,
     pub status: String,
@@ -85,11 +84,9 @@ pub fn run(sweep_path: &Path, output: &Path) -> Result<SweepReport> {
     let mut results = Vec::with_capacity(cases.len());
     for case in cases {
         let case_path = output.join(&case.case_id);
-        let run_id = case.scenario.run_id.clone();
         match run_resolved_experiment(&case.scenario, &case_path, false) {
             Ok(metrics) => results.push(SweepCaseResult {
                 case_id: case.case_id,
-                run_id,
                 root_seed: case.root_seed,
                 parameters: case.parameters,
                 status: "COMPLETE".to_owned(),
@@ -98,7 +95,6 @@ pub fn run(sweep_path: &Path, output: &Path) -> Result<SweepReport> {
             }),
             Err(error) => results.push(SweepCaseResult {
                 case_id: case.case_id,
-                run_id,
                 root_seed: case.root_seed,
                 parameters: case.parameters,
                 status: "FAILED".to_owned(),
@@ -160,9 +156,8 @@ fn load_and_expand(sweep_path: &Path) -> Result<(SweepSpec, PathBuf, Vec<Expande
                 set_path(&mut configured, path, value.clone())?;
             }
             set_path(&mut configured, "root_seed", Value::Number((*seed).into()))?;
-            let mut resolved: scenario::ResolvedScenario = serde_yaml_ng::from_value(configured)
+            let resolved: scenario::ResolvedScenario = serde_yaml_ng::from_value(configured)
                 .with_context(|| format!("invalid resolved sweep {case_id}"))?;
-            resolved.run_id = format!("{}-{case_id}-seed-{seed}", resolved.run_id);
             scenario::validate(&resolved)
                 .with_context(|| format!("invalid resolved sweep {case_id}"))?;
             cases.push(ExpandedCase {
@@ -187,10 +182,7 @@ fn validate_spec(spec: &SweepSpec) -> Result<()> {
             !path.trim().is_empty(),
             "sweep parameter path must not be empty"
         );
-        ensure!(
-            path != "root_seed" && path != "run_id",
-            "{path} is managed by the sweep runner"
-        );
+        ensure!(path != "root_seed", "{path} is managed by the sweep runner");
         ensure!(!values.is_empty(), "sweep parameter {path} has no values");
     }
     Ok(())

@@ -3,31 +3,28 @@ use std::{
     fs::{self, File},
     io::BufWriter,
     path::Path,
-    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
 use fusion_schema::{
     FILE_DESCRIPTOR_SET,
     messages::{
-        CameraFrame, EgoStateEstimate, EgoTruthState, GpsFix, ImuSample, LidarScan, ObjectTrack,
-        ObjectTruthState, ObservationTruth, RecordHeader, SensorCalibration,
+        CameraFrame, EgoStateEstimate, EgoTruthState, GpsFix, ImuBiasTruth, ImuSample, LidarScan,
+        MeasurementTime, ObjectTrack, ObjectTruthState,
     },
 };
 use mcap::{Writer, records::MessageHeader};
 use prost::Message;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     estimator::{BaselineAssumptions, FilterDiagnostics, TimingDiagnostics},
     eval::RunMetrics,
-    scenario::{ResolvedScenario, canonical_yaml, sha256},
+    scenario::{ResolvedScenario, canonical_yaml},
     tracker::TrackerDiagnostics,
 };
 
 #[derive(Debug, Clone)]
 pub enum MeasurementRecord {
-    Calibration(SensorCalibration),
     Imu(ImuSample),
     Gps(GpsFix),
     Camera(CameraFrame),
@@ -35,26 +32,14 @@ pub enum MeasurementRecord {
 }
 
 impl MeasurementRecord {
-    pub fn header(&self) -> &RecordHeader {
+    pub fn time(&self) -> &MeasurementTime {
         match self {
-            Self::Calibration(value) => value.header.as_ref(),
-            Self::Imu(value) => value.header.as_ref(),
-            Self::Gps(value) => value.header.as_ref(),
-            Self::Camera(value) => value.header.as_ref(),
-            Self::Lidar(value) => value.header.as_ref(),
+            Self::Imu(value) => value.time.as_ref(),
+            Self::Gps(value) => value.time.as_ref(),
+            Self::Camera(value) => value.time.as_ref(),
+            Self::Lidar(value) => value.time.as_ref(),
         }
-        .expect("generated measurements have headers")
-    }
-
-    pub fn header_mut(&mut self) -> &mut RecordHeader {
-        match self {
-            Self::Calibration(value) => value.header.as_mut(),
-            Self::Imu(value) => value.header.as_mut(),
-            Self::Gps(value) => value.header.as_mut(),
-            Self::Camera(value) => value.header.as_mut(),
-            Self::Lidar(value) => value.header.as_mut(),
-        }
-        .expect("generated measurements have headers")
+        .expect("generated measurements have time")
     }
 }
 
@@ -63,91 +48,7 @@ pub struct GeneratedRun {
     pub measurements: Vec<MeasurementRecord>,
     pub ego_truth_states: Vec<EgoTruthState>,
     pub object_truth_states: Vec<ObjectTruthState>,
-    pub observation_truth: Vec<ObservationTruth>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BundleManifest {
-    pub format_version: u32,
-    pub run_id: String,
-    pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    pub warnings: Vec<String>,
-    pub root_seed: u64,
-    pub simulator_commit: String,
-    pub artifacts: BTreeMap<String, String>,
-}
-
-impl BundleManifest {
-    pub fn start(scenario: &ResolvedScenario) -> Self {
-        Self {
-            format_version: scenario.format_version,
-            run_id: scenario.run_id.clone(),
-            status: "STARTED".to_owned(),
-            error: None,
-            warnings: vec![
-                "Camera and lidar are analytic object detections, not raw images or point clouds. Association is supplied.".to_owned(),
-                "The baseline estimators are planar; the measurement API carries 3D values for later platform models.".to_owned(),
-            ],
-            root_seed: scenario.root_seed,
-            simulator_commit: command_output("git", &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_owned()),
-            artifacts: BTreeMap::new(),
-        }
-    }
-
-    pub fn record_generated(&mut self, output: &Path) -> Result<()> {
-        for relative in ["scenario.resolved.yaml", "measurements.mcap", "truth.mcap"] {
-            self.record(output, relative)?;
-        }
-        Ok(())
-    }
-
-    pub fn record_outputs(&mut self, output: &Path) -> Result<()> {
-        for relative in [
-            "estimates/ego-baseline.mcap",
-            "tracks/estimated-ego.mcap",
-            "tracks/truth-ego.mcap",
-        ] {
-            self.record(output, relative)?;
-        }
-        Ok(())
-    }
-
-    pub fn finish(&mut self, output: &Path) -> Result<()> {
-        for relative in [
-            "reports/baseline/metrics.json",
-            "reports/baseline/summary.md",
-        ] {
-            self.record(output, relative)?;
-        }
-        let visualization = "reports/baseline/visualization.rrd";
-        if output.join(visualization).is_file() {
-            self.record(output, visualization)?;
-        }
-        self.status = "COMPLETE".to_owned();
-        self.write(output)
-    }
-
-    pub fn fail(&mut self, output: &Path, error: &anyhow::Error) -> Result<()> {
-        self.status = "FAILED".to_owned();
-        self.error = Some(format!("{error:#}"));
-        self.write(output)
-    }
-
-    pub fn write(&self, output: &Path) -> Result<()> {
-        fs::write(
-            output.join("manifest.json"),
-            serde_json::to_vec_pretty(self)?,
-        )?;
-        Ok(())
-    }
-
-    fn record(&mut self, output: &Path, relative: &str) -> Result<()> {
-        self.artifacts
-            .insert(relative.to_owned(), file_hash(&output.join(relative))?);
-        Ok(())
-    }
+    pub imu_bias_truth: Vec<ImuBiasTruth>,
 }
 
 pub fn prepare(output: &Path, scenario: &ResolvedScenario) -> Result<()> {
@@ -170,7 +71,7 @@ pub fn write_generated(output: &Path, generated: &GeneratedRun) -> Result<()> {
         &output.join("truth.mcap"),
         &generated.ego_truth_states,
         &generated.object_truth_states,
-        &generated.observation_truth,
+        &generated.imu_bias_truth,
     )
 }
 
@@ -200,7 +101,7 @@ pub fn write_ego_estimates_file(
             &mut writer,
             channel,
             sequence as u32,
-            estimate.emission_time_ns,
+            estimate.available_time_ns,
             estimate.estimate_time_ns,
             &estimate.encode_to_vec(),
         )?;
@@ -231,7 +132,7 @@ pub fn write_tracks_file(path: &Path, name: &str, tracks: &[ObjectTrack]) -> Res
             &mut writer,
             channel,
             sequence as u32,
-            track.emission_time_ns,
+            track.available_time_ns,
             track.estimate_time_ns,
             &track.encode_to_vec(),
         )?;
@@ -244,11 +145,10 @@ pub fn read_measurements(path: &Path) -> Result<Vec<MeasurementRecord>> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut records = Vec::new();
     let mut previous_log_time = None;
-    let mut previous_delivery = None;
     for item in mcap::MessageStream::new(&bytes)? {
         let message = item?;
         if previous_log_time.is_some_and(|time| message.log_time < time) {
-            bail!("measurement MCAP is not in receipt order");
+            bail!("measurement MCAP is not in arrival order");
         }
         previous_log_time = Some(message.log_time);
         let schema = message
@@ -257,10 +157,7 @@ pub fn read_measurements(path: &Path) -> Result<Vec<MeasurementRecord>> {
             .as_ref()
             .map(|schema| schema.name.as_str())
             .ok_or_else(|| anyhow::anyhow!("measurement channel has no schema"))?;
-        let record = match schema {
-            "fusion.SensorCalibration" => {
-                MeasurementRecord::Calibration(SensorCalibration::decode(message.data.as_ref())?)
-            }
+        records.push(match schema {
             "fusion.ImuSample" => MeasurementRecord::Imu(ImuSample::decode(message.data.as_ref())?),
             "fusion.GpsFix" => MeasurementRecord::Gps(GpsFix::decode(message.data.as_ref())?),
             "fusion.CameraFrame" => {
@@ -270,12 +167,7 @@ pub fn read_measurements(path: &Path) -> Result<Vec<MeasurementRecord>> {
                 MeasurementRecord::Lidar(LidarScan::decode(message.data.as_ref())?)
             }
             other => bail!("unsupported measurement schema {other}"),
-        };
-        if previous_delivery.is_some_and(|delivery| record.header().delivery_index <= delivery) {
-            bail!("measurement delivery indices are not increasing");
-        }
-        previous_delivery = Some(record.header().delivery_index);
-        records.push(record);
+        });
     }
     Ok(records)
 }
@@ -288,8 +180,8 @@ pub fn read_object_truth(path: &Path) -> Result<Vec<ObjectTruthState>> {
     read_schema(path, "fusion.ObjectTruthState")
 }
 
-pub fn read_observation_truth(path: &Path) -> Result<Vec<ObservationTruth>> {
-    read_schema(path, "fusion.ObservationTruth")
+pub fn read_imu_bias_truth(path: &Path) -> Result<Vec<ImuBiasTruth>> {
+    read_schema(path, "fusion.ImuBiasTruth")
 }
 
 pub fn read_ego_estimates(path: &Path) -> Result<Vec<EgoStateEstimate>> {
@@ -366,22 +258,14 @@ pub fn write_reports(
     Ok(())
 }
 
-pub fn refresh_artifact(output: &Path, relative: &str) -> Result<()> {
-    let path = output.join("manifest.json");
-    let mut manifest: BundleManifest = serde_json::from_slice(&fs::read(&path)?)?;
-    manifest.record(output, relative)?;
-    manifest.write(output)
-}
-
 fn write_measurements(path: &Path, records: &[MeasurementRecord]) -> Result<()> {
     let mut writer = new_writer(path)?;
     let mut channels = BTreeMap::new();
     for (schema_name, topic) in [
-        ("fusion.SensorCalibration", "/calibration/sensors"),
-        ("fusion.ImuSample", "/measurement/imu/primary"),
-        ("fusion.GpsFix", "/measurement/gps/primary"),
-        ("fusion.CameraFrame", "/measurement/camera/primary"),
-        ("fusion.LidarScan", "/measurement/lidar/primary"),
+        ("fusion.ImuSample", "/measurement/imu"),
+        ("fusion.GpsFix", "/measurement/gps"),
+        ("fusion.CameraFrame", "/measurement/camera"),
+        ("fusion.LidarScan", "/measurement/lidar"),
     ] {
         let schema = writer.add_schema(schema_name, "protobuf", FILE_DESCRIPTOR_SET)?;
         channels.insert(
@@ -389,23 +273,20 @@ fn write_measurements(path: &Path, records: &[MeasurementRecord]) -> Result<()> 
             writer.add_channel(schema, topic, "protobuf", &BTreeMap::new())?,
         );
     }
-    for record in records {
+    for (sequence, record) in records.iter().enumerate() {
         let (schema, bytes) = match record {
-            MeasurementRecord::Calibration(value) => {
-                ("fusion.SensorCalibration", value.encode_to_vec())
-            }
             MeasurementRecord::Imu(value) => ("fusion.ImuSample", value.encode_to_vec()),
             MeasurementRecord::Gps(value) => ("fusion.GpsFix", value.encode_to_vec()),
             MeasurementRecord::Camera(value) => ("fusion.CameraFrame", value.encode_to_vec()),
             MeasurementRecord::Lidar(value) => ("fusion.LidarScan", value.encode_to_vec()),
         };
-        let header = record.header();
+        let time = record.time();
         write_message(
             &mut writer,
             channels[schema],
-            header.sensor_sequence as u32,
-            header.receipt_time_ns,
-            header.reported_stamp_ns,
+            sequence as u32,
+            time.arrival_time_ns,
+            time.measurement_time_ns,
             &bytes,
         )?;
     }
@@ -417,14 +298,13 @@ fn write_truth(
     path: &Path,
     ego: &[EgoTruthState],
     objects: &[ObjectTruthState],
-    observations: &[ObservationTruth],
+    imu_bias: &[ImuBiasTruth],
 ) -> Result<()> {
     let mut writer = new_writer(path)?;
     let ego_schema = writer.add_schema("fusion.EgoTruthState", "protobuf", FILE_DESCRIPTOR_SET)?;
     let object_schema =
         writer.add_schema("fusion.ObjectTruthState", "protobuf", FILE_DESCRIPTOR_SET)?;
-    let observation_schema =
-        writer.add_schema("fusion.ObservationTruth", "protobuf", FILE_DESCRIPTOR_SET)?;
+    let bias_schema = writer.add_schema("fusion.ImuBiasTruth", "protobuf", FILE_DESCRIPTOR_SET)?;
     let ego_channel = writer.add_channel(ego_schema, "/truth/ego", "protobuf", &BTreeMap::new())?;
     let object_channel = writer.add_channel(
         object_schema,
@@ -432,19 +312,15 @@ fn write_truth(
         "protobuf",
         &BTreeMap::new(),
     )?;
-    let observation_channel = writer.add_channel(
-        observation_schema,
-        "/truth/observations",
-        "protobuf",
-        &BTreeMap::new(),
-    )?;
+    let bias_channel =
+        writer.add_channel(bias_schema, "/truth/imu_bias", "protobuf", &BTreeMap::new())?;
     for (sequence, state) in ego.iter().enumerate() {
         write_message(
             &mut writer,
             ego_channel,
             sequence as u32,
-            state.truth_time_ns,
-            state.truth_time_ns,
+            state.time_ns,
+            state.time_ns,
             &state.encode_to_vec(),
         )?;
     }
@@ -453,19 +329,19 @@ fn write_truth(
             &mut writer,
             object_channel,
             sequence as u32,
-            state.truth_time_ns,
-            state.truth_time_ns,
+            state.time_ns,
+            state.time_ns,
             &state.encode_to_vec(),
         )?;
     }
-    for (sequence, observation) in observations.iter().enumerate() {
+    for (sequence, state) in imu_bias.iter().enumerate() {
         write_message(
             &mut writer,
-            observation_channel,
+            bias_channel,
             sequence as u32,
-            observation.arrival_truth_ns,
-            observation.publish_truth_ns,
-            &observation.encode_to_vec(),
+            state.time_ns,
+            state.time_ns,
+            &state.encode_to_vec(),
         )?;
     }
     writer.finish()?;
@@ -499,18 +375,4 @@ fn write_message<W: std::io::Write + std::io::Seek>(
         data,
     )?;
     Ok(())
-}
-
-fn file_hash(path: &Path) -> Result<String> {
-    Ok(sha256(&fs::read(path).with_context(|| {
-        format!("failed to hash {}", path.display())
-    })?))
-}
-
-fn command_output(command: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(command).args(args).output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }

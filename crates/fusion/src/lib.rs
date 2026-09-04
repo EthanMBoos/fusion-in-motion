@@ -14,15 +14,13 @@ pub mod viz;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-use fusion_schema::messages::EgoSource;
-
 use crate::{
-    bundle::{BundleManifest, GeneratedRun, MeasurementRecord},
+    bundle::{GeneratedRun, MeasurementRecord},
     estimator::{EgoMeasurement, run_baseline},
     scenario::ResolvedScenario,
-    tracker::{EgoHistory, PerceptionMeasurement},
+    tracker::{EgoHistory, EgoSource, PerceptionMeasurement},
 };
+use anyhow::Result;
 
 pub fn resolve_scenario(path: &Path) -> Result<ResolvedScenario> {
     scenario::load_and_resolve(path)
@@ -56,105 +54,78 @@ pub(crate) fn run_resolved_experiment(
     output: &Path,
     build_visualization: bool,
 ) -> Result<eval::RunMetrics> {
-    let mut manifest = BundleManifest::start(scenario);
     bundle::prepare(output, scenario)?;
-    manifest.write(output)?;
-    let result = (|| {
-        let generated = sensor::generate(scenario)?;
-        bundle::write_generated(output, &generated)?;
-        manifest.record_generated(output)?;
+    let generated = sensor::generate(scenario)?;
+    let ego_measurements = generated
+        .measurements
+        .iter()
+        .filter_map(|record| match record {
+            MeasurementRecord::Imu(value) => Some(EgoMeasurement::Imu(*value)),
+            MeasurementRecord::Gps(value) => Some(EgoMeasurement::Gps(*value)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let perception_measurements = generated
+        .measurements
+        .iter()
+        .filter_map(|record| match record {
+            MeasurementRecord::Camera(value) => Some(PerceptionMeasurement::Camera(value.clone())),
+            MeasurementRecord::Lidar(value) => Some(PerceptionMeasurement::Lidar(value.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
 
-        let replayed = bundle::read_measurements(&output.join("measurements.mcap"))?;
-        let ego_measurements = replayed
-            .iter()
-            .filter_map(|record| match record {
-                MeasurementRecord::Imu(value) => Some(EgoMeasurement::Imu(value.clone())),
-                MeasurementRecord::Gps(value) => Some(EgoMeasurement::Gps(value.clone())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let perception_measurements = replayed
-            .iter()
-            .filter_map(|record| match record {
-                MeasurementRecord::Camera(value) => {
-                    Some(PerceptionMeasurement::Camera(value.clone()))
-                }
-                MeasurementRecord::Lidar(value) => {
-                    Some(PerceptionMeasurement::Lidar(value.clone()))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+    let ego_run = run_baseline(
+        &scenario.ego_estimator,
+        &scenario.imu,
+        &scenario.gps,
+        &ego_measurements,
+    )?;
+    let estimated_history = EgoHistory::from_estimates(&ego_run.estimates)?;
+    let estimated_tracker = tracker::run(
+        &scenario.object_tracker,
+        &perception_measurements,
+        &estimated_history,
+    )?;
 
-        let ego_run = run_baseline(
-            &scenario.ego_estimator,
-            &scenario.imu,
-            &scenario.gps,
-            &ego_measurements,
-        )?;
-        bundle::write_ego_estimates(output, &ego_run.estimates)?;
+    let truth_history = EgoHistory::from_truth(&generated.ego_truth_states)?;
+    let truth_tracker = tracker::run(
+        &scenario.object_tracker,
+        &perception_measurements,
+        &truth_history,
+    )?;
+    anyhow::ensure!(
+        estimated_tracker.processed_detections == truth_tracker.processed_detections,
+        "tracker comparison did not use identical detections"
+    );
 
-        let estimated_history = EgoHistory::from_estimates(&ego_run.estimates)?;
-        let estimated_tracker = tracker::run(
-            &scenario.object_tracker,
-            &scenario.camera,
-            &scenario.lidar,
-            &perception_measurements,
-            &estimated_history,
-            EgoSource::Estimated,
-            &scenario.platform.world_frame,
-        )?;
-        bundle::write_tracks(output, "estimated-ego", &estimated_tracker.tracks)?;
+    let metrics = eval::evaluate(
+        scenario,
+        &generated.ego_truth_states,
+        &generated.object_truth_states,
+        &generated.imu_bias_truth,
+        &ego_run.estimates,
+        &estimated_tracker.tracks,
+        &truth_tracker.tracks,
+    );
 
-        let truth_path = output.join("truth.mcap");
-        let ego_truth = bundle::read_ego_truth(&truth_path)?;
-        let truth_history = EgoHistory::from_truth(&ego_truth)?;
-        let truth_tracker = tracker::run(
-            &scenario.object_tracker,
-            &scenario.camera,
-            &scenario.lidar,
-            &perception_measurements,
-            &truth_history,
-            EgoSource::Truth,
-            &scenario.platform.world_frame,
-        )?;
-        anyhow::ensure!(
-            estimated_tracker.processed_detection_ids == truth_tracker.processed_detection_ids,
-            "tracker comparison did not use identical detections"
-        );
-        bundle::write_tracks(output, "truth-ego", &truth_tracker.tracks)?;
-        manifest.record_outputs(output)?;
-
-        let object_truth = bundle::read_object_truth(&truth_path)?;
-        let observation_truth = bundle::read_observation_truth(&truth_path)?;
-        let metrics = eval::evaluate(
-            scenario,
-            &ego_truth,
-            &object_truth,
-            &observation_truth,
-            &ego_run.estimates,
-            &estimated_tracker.tracks,
-            &truth_tracker.tracks,
-        );
-        bundle::write_reports(
-            output,
-            &metrics,
-            &ego_run.timing,
-            &ego_run.diagnostics,
-            &estimated_tracker.diagnostics,
-            &truth_tracker.diagnostics,
-            &ego_run.assumptions,
-        )?;
-        if build_visualization {
-            viz::write_bundle_visualization(output, &viz::default_visualization_path(output))?;
-        }
-        manifest.finish(output)?;
-        Ok(metrics)
-    })();
-    if let Err(error) = &result {
-        let _ = manifest.fail(output, error);
+    bundle::write_generated(output, &generated)?;
+    bundle::write_ego_estimates(output, &ego_run.estimates)?;
+    bundle::write_tracks(output, "estimated-ego", &estimated_tracker.tracks)?;
+    bundle::write_tracks(output, "truth-ego", &truth_tracker.tracks)?;
+    bundle::write_reports(
+        output,
+        &metrics,
+        &ego_run.timing,
+        &ego_run.diagnostics,
+        &estimated_tracker.diagnostics,
+        &truth_tracker.diagnostics,
+        &ego_run.assumptions,
+    )?;
+    if build_visualization {
+        viz::write_bundle_visualization(output, &viz::default_visualization_path(output))?;
     }
-    result
+    Ok(metrics)
 }
 
 pub fn generate_bundle(scenario_path: &Path, output: &Path) -> Result<GeneratedRun> {
@@ -168,12 +139,7 @@ pub fn generate_bundle(scenario_path: &Path, output: &Path) -> Result<GeneratedR
 pub fn score_ego_csv(run: &Path, csv: &Path, id: &str) -> Result<eval::EgoMetrics> {
     validate_external_id(id)?;
     let scenario = resolve_scenario(&run.join("scenario.resolved.yaml"))?;
-    let estimates = external::read_ego_csv(
-        csv,
-        id,
-        &scenario.platform.world_frame,
-        &scenario.platform.body_frame,
-    )?;
+    let estimates = external::read_ego_csv(csv, id, "world", "body")?;
     let relative = format!("estimates/{id}.mcap");
     anyhow::ensure!(
         !run.join(&relative).exists(),
@@ -185,12 +151,10 @@ pub fn score_ego_csv(run: &Path, csv: &Path, id: &str) -> Result<eval::EgoMetric
     let metrics = eval::evaluate_ego(
         &scenario,
         &bundle::read_ego_truth(&truth_path)?,
-        &bundle::read_observation_truth(&truth_path)?,
+        &bundle::read_imu_bias_truth(&truth_path)?,
         &estimates,
     );
     write_external_report(run, id, &metrics)?;
-    bundle::refresh_artifact(run, &relative)?;
-    bundle::refresh_artifact(run, &format!("reports/{id}/metrics.json"))?;
     Ok(metrics)
 }
 
@@ -202,7 +166,7 @@ pub fn score_tracks_csv(
 ) -> Result<eval::TrackMetrics> {
     validate_external_id(id)?;
     let scenario = resolve_scenario(&run.join("scenario.resolved.yaml"))?;
-    let tracks = external::read_tracks_csv(csv, id, &scenario.platform.world_frame, ego_source)?;
+    let tracks = external::read_tracks_csv(csv, id, "world", ego_source)?;
     let relative = format!("tracks/{id}.mcap");
     anyhow::ensure!(
         !run.join(&relative).exists(),
@@ -225,8 +189,6 @@ pub fn score_tracks_csv(
         ego_label,
     );
     write_external_report(run, id, &metrics)?;
-    bundle::refresh_artifact(run, &relative)?;
-    bundle::refresh_artifact(run, &format!("reports/{id}/metrics.json"))?;
     Ok(metrics)
 }
 

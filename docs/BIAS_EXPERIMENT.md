@@ -1,5 +1,11 @@
 # IMU bias experiment
 
+Run it with:
+
+```sh
+fusion run examples/imu_bias.yaml --view
+```
+
 This experiment is about the vehicle knowing its own position. Better vehicle
 motion also gives the object tracker a better reference.
 
@@ -12,8 +18,8 @@ The baseline estimates the gyroscope z-axis error and accelerometer x-axis
 error. The dashboard and report compare those estimates with the simulated
 sensor error and show their uncertainty.
 
-Increase `imu.gyro_turn_on_bias_radps.z` or
-`imu.accel_turn_on_bias_mps2.x`, then run several seeds. Look for three things:
+Increase `imu.gyro_bias_radps` or `imu.accel_bias_mps2`, then run several seeds.
+Look for three things:
 whether the estimate moves toward the starting error, whether it follows slow
 drift, and whether the truth usually stays inside the reported uncertainty.
 

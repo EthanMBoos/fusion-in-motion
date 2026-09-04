@@ -1,66 +1,49 @@
 # Start here
 
-Run the starter scenario:
+Run the starter:
 
 ```sh
 fusion run examples/initial.yaml --view
 ```
 
-The run is saved as `runs/run001`. Future runs use `run002`, `run003`, and so
-on. Reopen one with:
+## What the dashboard shows
+
+The large map follows the vehicle and two objects. Green is truth. Pink is the
+vehicle position estimated from GPS and IMU. Yellow dots are GPS fixes.
+
+Orange and purple are estimates of the objects. Orange uses the estimated
+vehicle pose. Purple uses the true vehicle pose as a control. Both receive the
+same detections. The gap between them shows how an error in the vehicle pose
+moves an object track.
+
+The camera view uses equal-length cyan rays because the camera gives direction,
+not distance. Lidar gives both, so its blue rays end at the measured distance.
+The plots show vehicle error, object error, IMU readings, and detection counts.
+
+Drag through the left turn from 5 to 7 seconds. A small heading error moves a
+distant object sideways.
+
+## Three useful edits
+
+Edit `examples/initial.yaml`, run it again, and compare the dashboard with the
+previous run.
+
+First set `gps.enabled` to `false`. The IMU can follow short motion, but position
+drifts without GPS corrections. The orange object tracks move with that error.
+
+Restore GPS, then change `gps.horizontal_position_stddev_m` from `0.25` to
+`1.0`. The vehicle estimate and orange tracks become noisier. Purple remains the
+control.
+
+Restore the GPS noise, then disable either camera or lidar. Lidar can create a
+track because it measures distance. A single camera direction cannot create a
+track by itself, but camera measurements can update a track that lidar already
+started.
+
+Reopen any run with:
 
 ```sh
 fusion view runs/run001
 ```
 
-## Read the dashboard
-
-The large map contains two separate results. Pink is the GPS/IMU estimate of
-the vehicle. Orange and purple are estimates of the other objects.
-
-Purple object tracks use the true vehicle pose. Orange tracks use the GPS/IMU
-vehicle estimate. Both receive the same camera and lidar detections. A gap
-between orange and purple shows how vehicle-position error entered the object
-track.
-
-The camera panel draws equal-length rays because the camera reports direction,
-not distance. The lidar panel shows range and direction. The plots below the
-sensor views show vehicle error, object error, IMU readings, GPS delay, and the
-number of detections. The two bias plots compare the IMU's simulated error with
-the error learned by the vehicle filter.
-
-Drag the timeline through the first left turn from 5 to 7 seconds. Heading
-error is easiest to see there, and a small heading error moves distant object
-tracks sideways.
-
-## Try the important changes
-
-Make one edit in `examples/initial.yaml`, run it again, and compare the new run
-with the previous one:
-
-```sh
-fusion compare runs/run001 runs/run002
-fusion view runs/run002
-```
-
-First set `gps.enabled` to `false`. The IMU still follows short-term motion, but
-its position drifts because nothing pulls it back to the local-world position.
-The orange object tracks should get worse with it. Set GPS back to `true` before
-continuing.
-
-Next change `gps.horizontal_position_stddev_m` from `0.25` to `1.0`. The vehicle
-estimate and orange object tracks should become noisier. Purple is the useful
-control: its detections did not change and it does not use the GPS/IMU result.
-
-Set `camera.enabled` to `false`. Lidar can still start and update tracks because
-it measures distance. Put the camera back, then set `lidar.enabled` to `false`.
-The current camera-only path reports detections but does not start a track from
-a single direction measurement. Multi-view camera initialization is future
-drone work.
-
-Finally, restore both sensors and change their noise or detection probability.
-Only the object tracks should move. The vehicle estimate must stay exactly the
-same because camera and lidar do not enter its filter.
-
-For repeatable multi-seed comparisons, use the examples in
-[EXPERIMENTS.md](EXPERIMENTS.md).
+Use `fusion compare runs/run001 runs/run002` when you want the metric difference.

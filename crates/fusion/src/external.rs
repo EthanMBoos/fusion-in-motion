@@ -1,21 +1,18 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::{Context, Result, bail, ensure};
-use fusion_schema::messages::{
-    CovarianceKind, EgoSource, EgoStateEstimate, EgoStateModel, EstimateStatus, ObjectStateModel,
-    ObjectTrack, Vec3,
-};
+use anyhow::{Context, Result, ensure};
+use fusion_schema::messages::{EgoStateEstimate, ObjectTrack, Vec2};
 
-use crate::math;
+use crate::{math, tracker::EgoSource};
 
 type Columns = BTreeMap<String, usize>;
 type Rows = Vec<(usize, Vec<String>)>;
 
 pub fn read_ego_csv(
     path: &Path,
-    estimator_id: &str,
-    world_frame: &str,
-    body_frame: &str,
+    _estimator_id: &str,
+    _world_frame: &str,
+    _body_frame: &str,
 ) -> Result<Vec<EgoStateEstimate>> {
     let (columns, rows) = read_rows(path)?;
     for required in ["estimate_time_ns", "x_m", "y_m", "yaw_rad"] {
@@ -28,8 +25,8 @@ pub fn read_ego_csv(
     for (line, fields) in rows {
         let estimate_time_ns = required::<i64>(&columns, &fields, "estimate_time_ns")
             .with_context(|| format!("line {line}"))?;
-        let emission_time_ns =
-            optional::<i64>(&columns, &fields, "emission_time_ns")?.unwrap_or(estimate_time_ns);
+        let available_time_ns =
+            optional::<i64>(&columns, &fields, "available_time_ns")?.unwrap_or(estimate_time_ns);
         let x = required(&columns, &fields, "x_m")?;
         let y = required(&columns, &fields, "y_m")?;
         let yaw = required(&columns, &fields, "yaw_rad")?;
@@ -42,20 +39,11 @@ pub fn read_ego_csv(
             "ego CSV line {line} contains a non-finite value"
         );
         estimates.push(EgoStateEstimate {
-            estimator_id: estimator_id.to_owned(),
             estimate_time_ns,
-            emission_time_ns,
-            pose_w_b: Some(math::yaw_pose(x, y, yaw, world_frame, body_frame)),
-            velocity_world_mps: Some(Vec3 {
-                x: vx,
-                y: vy,
-                z: 0.0,
-            }),
-            status: status(&columns, &fields, line)? as i32,
-            covariance_kind: CovarianceKind::Unknown as i32,
-            covariance: Vec::new(),
-            revision: 0,
-            state_model: EgoStateModel::Planar as i32,
+            available_time_ns,
+            pose_world: Some(math::pose2(x, y, yaw)),
+            forward_speed_mps: vx * yaw.cos() + vy * yaw.sin(),
+            state_covariance: Vec::new(),
             gyro_bias_z_radps: optional(&columns, &fields, "gyro_bias_z_radps")?,
             accel_bias_x_mps2: optional(&columns, &fields, "accel_bias_x_mps2")?,
         });
@@ -72,15 +60,14 @@ pub fn read_ego_csv(
 
 pub fn read_tracks_csv(
     path: &Path,
-    tracker_id: &str,
-    world_frame: &str,
-    ego_source: EgoSource,
+    _tracker_id: &str,
+    _world_frame: &str,
+    _ego_source: EgoSource,
 ) -> Result<Vec<ObjectTrack>> {
     let (columns, rows) = read_rows(path)?;
     for required in [
         "estimate_time_ns",
-        "track_id",
-        "association_key",
+        "track_key",
         "x_m",
         "y_m",
         "vx_mps",
@@ -94,8 +81,8 @@ pub fn read_tracks_csv(
     let mut tracks = Vec::new();
     for (line, fields) in rows {
         let estimate_time_ns = required::<i64>(&columns, &fields, "estimate_time_ns")?;
-        let emission_time_ns =
-            optional::<i64>(&columns, &fields, "emission_time_ns")?.unwrap_or(estimate_time_ns);
+        let available_time_ns =
+            optional::<i64>(&columns, &fields, "available_time_ns")?.unwrap_or(estimate_time_ns);
         let x = required(&columns, &fields, "x_m")?;
         let y = required(&columns, &fields, "y_m")?;
         let vx = required(&columns, &fields, "vx_mps")?;
@@ -105,24 +92,12 @@ pub fn read_tracks_csv(
             "track CSV line {line} contains a non-finite value"
         );
         tracks.push(ObjectTrack {
-            tracker_id: tracker_id.to_owned(),
-            track_id: text(&columns, &fields, "track_id")?.to_owned(),
-            association_key: text(&columns, &fields, "association_key")?.to_owned(),
+            track_key: text(&columns, &fields, "track_key")?.to_owned(),
             estimate_time_ns,
-            emission_time_ns,
-            position_world_m: Some(Vec3 { x, y, z: 0.0 }),
-            velocity_world_mps: Some(Vec3 {
-                x: vx,
-                y: vy,
-                z: 0.0,
-            }),
-            status: status(&columns, &fields, line)? as i32,
-            covariance_kind: CovarianceKind::Unknown as i32,
-            covariance: Vec::new(),
-            revision: 0,
-            state_model: ObjectStateModel::PlanarConstantVelocity as i32,
-            ego_source: ego_source as i32,
-            frame_id: world_frame.to_owned(),
+            available_time_ns,
+            position_world_m: Some(Vec2 { x, y }),
+            velocity_world_mps: Some(Vec2 { x: vx, y: vy }),
+            state_covariance: Vec::new(),
         });
     }
     ensure!(!tracks.is_empty(), "track CSV contains no rows");
@@ -201,21 +176,4 @@ fn text<'a>(
         .map(String::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing {name}"))
-}
-
-fn status(
-    columns: &BTreeMap<String, usize>,
-    fields: &[String],
-    line: usize,
-) -> Result<EstimateStatus> {
-    match columns
-        .get("status")
-        .and_then(|index| fields.get(*index))
-        .map(String::as_str)
-    {
-        None | Some("") | Some("VALID") => Ok(EstimateStatus::Valid),
-        Some("INITIALIZING") => Ok(EstimateStatus::Initializing),
-        Some("DIVERGED") => Ok(EstimateStatus::Diverged),
-        Some(value) => bail!("CSV line {line} has unsupported status {value}"),
-    }
 }

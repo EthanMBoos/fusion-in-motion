@@ -100,9 +100,12 @@ The full dashboard should show:
 - camera direction rays without implied distance;
 - lidar range and direction;
 - vehicle and object error plots;
-- IMU bias truth, estimate, and both uncertainty bounds;
-- IMU data, GPS age, and detection counts; and
+- IMU data and detection counts; and
 - a readable timeline and guide.
+
+The bias example must also show bias truth, estimate, and both uncertainty
+bounds. The timing example must show GPS age. These panels should not appear in
+the starter dashboard.
 
 Camera or lidar changes must not move the vehicle estimate. In matched images,
 check that the truth-ego object track remains the control while estimated-ego

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use fusion_schema::messages::EgoSource;
+use fusion_in_motion::tracker::EgoSource;
 
 #[derive(Debug, Parser)]
 #[command(

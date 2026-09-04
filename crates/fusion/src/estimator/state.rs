@@ -60,8 +60,16 @@ pub fn initial_covariance(config: &EgoEstimatorConfig) -> StateCovariance {
         config.initial_position_stddev_m,
         config.initial_yaw_stddev_rad,
         config.initial_speed_stddev_mps,
-        config.initial_gyro_bias_stddev_radps,
-        config.initial_accel_bias_stddev_mps2,
+        if config.estimate_imu_bias {
+            config.initial_gyro_bias_stddev_radps
+        } else {
+            1.0e-9
+        },
+        if config.estimate_imu_bias {
+            config.initial_accel_bias_stddev_mps2
+        } else {
+            1.0e-9
+        },
     ];
     StateCovariance::from_diagonal(&SVector::from_fn(|index, _| stddevs[index].powi(2)))
 }

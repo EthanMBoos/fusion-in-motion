@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use fusion_schema::messages::{
-    EgoStateEstimate, EgoTruthState, ObjectTrack, ObjectTruthState, ObservationTruth, Pose,
+    EgoStateEstimate, EgoTruthState, ImuBiasTruth, ObjectTrack, ObjectTruthState, Pose2,
 };
 
 use crate::{
@@ -34,7 +34,6 @@ pub fn ensure_bundle_visualization(run: &Path, force: bool) -> Result<PathBuf> {
         return Ok(output);
     }
     write_bundle_visualization(run, &output)?;
-    bundle::refresh_artifact(run, "reports/baseline/visualization.rrd")?;
     Ok(output)
 }
 
@@ -42,7 +41,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     let measurements = bundle::read_measurements(&run.join("measurements.mcap"))?;
     let ego_truth = bundle::read_ego_truth(&run.join("truth.mcap"))?;
     let object_truth = bundle::read_object_truth(&run.join("truth.mcap"))?;
-    let observation_truth = bundle::read_observation_truth(&run.join("truth.mcap"))?;
+    let imu_bias_truth = bundle::read_imu_bias_truth(&run.join("truth.mcap"))?;
     let estimates = bundle::read_ego_estimates(&run.join("estimates/ego-baseline.mcap"))?;
     let estimated_tracks = bundle::read_tracks(&run.join("tracks/estimated-ego.mcap"))?;
     let truth_tracks = bundle::read_tracks(&run.join("tracks/truth-ego.mcap"))?;
@@ -84,7 +83,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     log_ego(&rec, &ego_truth, &estimates)?;
     log_objects(&rec, &object_truth, &estimated_tracks, &truth_tracks)?;
     log_measurements(&rec, &measurements)?;
-    log_bias(&rec, &observation_truth, &estimates)?;
+    log_bias(&rec, &imu_bias_truth, &estimates)?;
     log_errors(
         &rec,
         &scenario,
@@ -94,7 +93,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
         &estimated_tracks,
         &truth_tracks,
     )?;
-    send_blueprint(&rec)?;
+    send_blueprint(&rec, &scenario)?;
     rec.flush_blocking()?;
     Ok(())
 }
@@ -171,8 +170,8 @@ fn log_paths(
 ) -> Result<()> {
     let truth_samples = ego_truth.iter().filter_map(|state| {
         Some((
-            state.truth_time_ns,
-            point2(state.pose_w_b.as_ref()?.position.as_ref()?),
+            state.time_ns,
+            point2(state.pose_world.as_ref()?.position.as_ref()?),
         ))
     });
     log_path_samples(
@@ -185,7 +184,7 @@ fn log_paths(
     let estimate_samples = estimates.iter().filter_map(|state| {
         Some((
             state.estimate_time_ns,
-            point2(state.pose_w_b.as_ref()?.position.as_ref()?),
+            point2(state.pose_world.as_ref()?.position.as_ref()?),
         ))
     });
     log_path_samples(
@@ -247,11 +246,11 @@ fn log_map_bounds(
 ) -> Result<()> {
     let ego_truth_points = ego_truth
         .iter()
-        .filter_map(|state| state.pose_w_b.as_ref()?.position.as_ref())
+        .filter_map(|state| state.pose_world.as_ref()?.position.as_ref())
         .map(point2);
     let estimate_points = estimates
         .iter()
-        .filter_map(|state| state.pose_w_b.as_ref()?.position.as_ref())
+        .filter_map(|state| state.pose_world.as_ref()?.position.as_ref())
         .map(point2);
     let object_truth_points = object_truth
         .iter()
@@ -299,9 +298,9 @@ fn log_object_paths(
     for state in states {
         if let Some(position) = &state.position_world_m {
             by_object
-                .entry(&state.object_id)
+                .entry(&state.track_key)
                 .or_default()
-                .push((state.truth_time_ns, point2(position)));
+                .push((state.time_ns, point2(position)));
         }
     }
     for (id, points) in by_object {
@@ -326,7 +325,7 @@ fn log_track_paths(
     for track in tracks {
         if let Some(position) = &track.position_world_m {
             by_track
-                .entry(&track.association_key)
+                .entry(&track.track_key)
                 .or_default()
                 .push((track.estimate_time_ns, point2(position)));
         }
@@ -378,12 +377,7 @@ fn log_sensor_references(
             _ => None,
         })
         .flat_map(|scan| &scan.detections)
-        .map(|detection| {
-            polar(
-                detection.range_m * detection.elevation_rad.cos(),
-                detection.azimuth_rad,
-            )
-        });
+        .map(|detection| polar(detection.range_m, detection.bearing_rad));
     let ([mut min_x, mut min_y], [mut max_x, mut max_y]) = lidar_points.fold(
         ([0.0_f32, 0.0_f32], [0.0_f32, 0.0_f32]),
         |([min_x, min_y], [max_x, max_y]), [x, y]| {
@@ -422,13 +416,13 @@ fn log_ego(
     estimates: &[EgoStateEstimate],
 ) -> Result<()> {
     for state in truth {
-        if let Some(pose) = &state.pose_w_b {
-            set_time(rec, state.truth_time_ns);
+        if let Some(pose) = &state.pose_world {
+            set_time(rec, state.time_ns);
             log_pose(rec, "map/vehicle/truth", pose, TRUTH_COLOR, 0.24, 1.0)?;
         }
     }
     for state in estimates {
-        if let Some(pose) = &state.pose_w_b {
+        if let Some(pose) = &state.pose_world {
             set_time(rec, state.estimate_time_ns);
             log_pose(rec, "map/vehicle/estimate", pose, EGO_COLOR, 0.14, 0.7)?;
         }
@@ -444,13 +438,13 @@ fn log_objects(
 ) -> Result<()> {
     for state in truth {
         if let Some(position) = &state.position_world_m {
-            set_time(rec, state.truth_time_ns);
+            set_time(rec, state.time_ns);
             rec.log(
-                format!("map/objects/truth/{}", state.object_id),
+                format!("map/objects/truth/{}", state.track_key),
                 &rerun::Points2D::new([point2(position)])
                     .with_colors([TRUTH_COLOR])
                     .with_radii([0.19])
-                    .with_labels([state.object_id.as_str()]),
+                    .with_labels([state.track_key.as_str()]),
             )?;
         }
     }
@@ -466,7 +460,7 @@ fn log_objects(
             if let Some(position) = &track.position_world_m {
                 set_time(rec, track.estimate_time_ns);
                 rec.log(
-                    format!("{root}/{}", track.association_key),
+                    format!("{root}/{}", track.track_key),
                     &rerun::Points2D::new([point2(position)])
                         .with_colors([color])
                         .with_radii([0.12]),
@@ -482,17 +476,18 @@ fn log_measurements(
     measurements: &[MeasurementRecord],
 ) -> Result<()> {
     for measurement in measurements {
-        let header = measurement.header();
-        set_time(rec, header.reported_stamp_ns);
+        let time = measurement.time();
+        set_time(rec, time.measurement_time_ns);
         match measurement {
-            MeasurementRecord::Calibration(_) => {}
             MeasurementRecord::Imu(sample) => {
-                if let Some(gyro) = &sample.angular_rate_radps {
-                    rec.log("plots/imu/gyro_z_radps", &rerun::Scalars::single(gyro.z))?;
-                }
-                if let Some(accel) = &sample.specific_force_mps2 {
-                    rec.log("plots/imu/accel_x_mps2", &rerun::Scalars::single(accel.x))?;
-                }
+                rec.log(
+                    "plots/imu/gyro_z_radps",
+                    &rerun::Scalars::single(sample.yaw_rate_radps),
+                )?;
+                rec.log(
+                    "plots/imu/accel_x_mps2",
+                    &rerun::Scalars::single(sample.forward_acceleration_mps2),
+                )?;
             }
             MeasurementRecord::Gps(fix) => {
                 if let Some(position) = &fix.position_world_m {
@@ -506,7 +501,7 @@ fn log_measurements(
                 rec.log(
                     "plots/gps/age_ms",
                     &rerun::Scalars::single(
-                        (header.receipt_time_ns - header.reported_stamp_ns) as f64 * 1.0e-6,
+                        (time.arrival_time_ns - time.measurement_time_ns) as f64 * 1.0e-6,
                     ),
                 )?;
             }
@@ -514,7 +509,7 @@ fn log_measurements(
                 let rays = frame
                     .detections
                     .iter()
-                    .map(|detection| vec![[0.0, 0.0], polar(3.0, detection.azimuth_rad)])
+                    .map(|detection| vec![[0.0, 0.0], polar(3.0, detection.bearing_rad)])
                     .collect::<Vec<_>>();
                 rec.log(
                     "sensors/camera/bearings",
@@ -531,12 +526,7 @@ fn log_measurements(
                 let points = scan
                     .detections
                     .iter()
-                    .map(|detection| {
-                        polar(
-                            detection.range_m * detection.elevation_rad.cos(),
-                            detection.azimuth_rad,
-                        )
-                    })
+                    .map(|detection| polar(detection.range_m, detection.bearing_rad))
                     .collect::<Vec<_>>();
                 let rays = points
                     .iter()
@@ -573,20 +563,16 @@ fn log_errors(
     estimated_tracks: &[ObjectTrack],
     truth_tracks: &[ObjectTrack],
 ) -> Result<()> {
-    let object_ids = scenario
-        .world
-        .objects
-        .iter()
-        .map(|object| (&object.association_key, &object.id))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let _ = scenario;
     for estimate in estimates {
         let Some(truth) = ego_truth
             .iter()
-            .min_by_key(|truth| (truth.truth_time_ns - estimate.estimate_time_ns).abs())
+            .min_by_key(|truth| (truth.time_ns - estimate.estimate_time_ns).abs())
         else {
             continue;
         };
-        let (Some(estimate_pose), Some(truth_pose)) = (&estimate.pose_w_b, &truth.pose_w_b) else {
+        let (Some(estimate_pose), Some(truth_pose)) = (&estimate.pose_world, &truth.pose_world)
+        else {
             continue;
         };
         let (Some(estimate_position), Some(truth_position)) =
@@ -605,10 +591,7 @@ fn log_errors(
         rec.log(
             "plots/ego/yaw_error_rad",
             &rerun::Scalars::single(
-                math::wrap_angle(
-                    math::yaw_from_pose(estimate_pose) - math::yaw_from_pose(truth_pose),
-                )
-                .abs(),
+                math::wrap_angle(estimate_pose.yaw_rad - truth_pose.yaw_rad).abs(),
             ),
         )?;
     }
@@ -617,13 +600,10 @@ fn log_errors(
         ("plots/objects/truth_ego_error_m", truth_tracks),
     ] {
         for track in tracks {
-            let Some(object_id) = object_ids.get(&track.association_key) else {
-                continue;
-            };
             let Some(truth) = object_truth
                 .iter()
-                .filter(|truth| truth.object_id == **object_id)
-                .min_by_key(|truth| (truth.truth_time_ns - track.estimate_time_ns).abs())
+                .filter(|truth| truth.track_key == track.track_key)
+                .min_by_key(|truth| (truth.time_ns - track.estimate_time_ns).abs())
             else {
                 continue;
             };
@@ -646,39 +626,30 @@ fn log_errors(
 
 fn log_bias(
     rec: &rerun::RecordingStream,
-    observation_truth: &[ObservationTruth],
+    imu_bias_truth: &[ImuBiasTruth],
     estimates: &[EgoStateEstimate],
 ) -> Result<()> {
-    let truth = observation_truth
+    let truth = imu_bias_truth
         .iter()
-        .filter_map(|observation| {
-            let effects = observation.imu_effects.as_ref()?;
-            Some((observation.acquisition_end_truth_ns, effects))
-        })
+        .map(|bias| (bias.time_ns, bias))
         .collect::<std::collections::BTreeMap<_, _>>();
 
     for estimate in estimates {
-        let (Some(effects), Some(gyro_estimate), Some(accel_estimate)) = (
+        let (Some(bias), Some(gyro_estimate), Some(accel_estimate)) = (
             truth.get(&estimate.estimate_time_ns),
             estimate.gyro_bias_z_radps,
             estimate.accel_bias_x_mps2,
         ) else {
             continue;
         };
-        let (Some(gyro_truth), Some(accel_truth)) = (
-            effects.gyro_bias_body_radps.as_ref(),
-            effects.accel_bias_body_mps2.as_ref(),
-        ) else {
-            continue;
-        };
-        if estimate.covariance.len() != 36 {
+        if estimate.state_covariance.len() != 36 {
             continue;
         }
 
         set_time(rec, estimate.estimate_time_ns);
-        let gyro_interval = 1.96 * estimate.covariance[4 * 6 + 4].max(0.0).sqrt();
+        let gyro_interval = 1.96 * estimate.state_covariance[4 * 6 + 4].max(0.0).sqrt();
         for (path, value) in [
-            ("plots/bias/gyro/truth", gyro_truth.z),
+            ("plots/bias/gyro/truth", bias.gyro_bias_z_radps),
             ("plots/bias/gyro/estimate", gyro_estimate),
             ("plots/bias/gyro/lower", gyro_estimate - gyro_interval),
             ("plots/bias/gyro/upper", gyro_estimate + gyro_interval),
@@ -686,9 +657,9 @@ fn log_bias(
             rec.log(path, &rerun::Scalars::single(value))?;
         }
 
-        let accel_interval = 1.96 * estimate.covariance[5 * 6 + 5].max(0.0).sqrt();
+        let accel_interval = 1.96 * estimate.state_covariance[5 * 6 + 5].max(0.0).sqrt();
         for (path, value) in [
-            ("plots/bias/accel/truth", accel_truth.x),
+            ("plots/bias/accel/truth", bias.accel_bias_x_mps2),
             ("plots/bias/accel/estimate", accel_estimate),
             ("plots/bias/accel/lower", accel_estimate - accel_interval),
             ("plots/bias/accel/upper", accel_estimate + accel_interval),
@@ -702,7 +673,7 @@ fn log_bias(
 fn log_pose(
     rec: &rerun::RecordingStream,
     path: &str,
-    pose: &Pose,
+    pose: &Pose2,
     color: u32,
     radius: f32,
     heading_length: f32,
@@ -711,7 +682,7 @@ fn log_pose(
         return Ok(());
     };
     let origin = point2(position);
-    let yaw = math::yaw_from_pose(pose) as f32;
+    let yaw = pose.yaw_rad as f32;
     rec.log(
         format!("{path}/position"),
         &rerun::Points2D::new([origin])
@@ -728,7 +699,10 @@ fn log_pose(
     Ok(())
 }
 
-fn send_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
+fn send_blueprint(
+    rec: &rerun::RecordingStream,
+    scenario: &crate::scenario::ResolvedScenario,
+) -> Result<()> {
     use rerun::blueprint::{
         Blueprint, BlueprintActivation, BlueprintPanel, Grid, Horizontal, SelectionPanel,
         Spatial2DView, TextDocumentView, TimePanel, TimeSeriesView, Vertical,
@@ -752,28 +726,50 @@ fn send_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
             .into(),
     ])
     .with_grid_columns(2);
-    let plots = Grid::new([
+    let mut plot_views: Vec<rerun::blueprint::ContainerLike> = vec![
         TimeSeriesView::new("Vehicle error")
             .with_origin("plots/ego")
             .into(),
         TimeSeriesView::new("Object error")
             .with_origin("plots/objects")
             .into(),
-        TimeSeriesView::new("Gyro bias")
-            .with_origin("plots/bias/gyro")
-            .into(),
-        TimeSeriesView::new("Accelerometer bias")
-            .with_origin("plots/bias/accel")
-            .into(),
         TimeSeriesView::new("IMU").with_origin("plots/imu").into(),
-        TimeSeriesView::new("GPS timing")
-            .with_origin("plots/gps")
-            .into(),
         TimeSeriesView::new("Detections")
             .with_origin("plots/detections")
             .into(),
-    ])
-    .with_grid_columns(4);
+    ];
+    if scenario.ego_estimator.estimate_imu_bias {
+        plot_views.push(
+            TimeSeriesView::new("Gyro bias")
+                .with_origin("plots/bias/gyro")
+                .into(),
+        );
+        plot_views.push(
+            TimeSeriesView::new("Accelerometer bias")
+                .with_origin("plots/bias/accel")
+                .into(),
+        );
+    }
+    if [
+        scenario.imu.latency_ns,
+        scenario.gps.latency_ns,
+        scenario.camera.latency_ns,
+        scenario.lidar.latency_ns,
+    ]
+    .into_iter()
+    .any(|latency| latency > 0)
+    {
+        plot_views.push(
+            TimeSeriesView::new("GPS timing")
+                .with_origin("plots/gps")
+                .into(),
+        );
+    }
+    let plot_columns = match plot_views.len() {
+        5 | 6 => 3,
+        _ => 4,
+    };
+    let plots = Grid::new(plot_views).with_grid_columns(plot_columns);
     let root = Vertical::new([top.into(), sensors.into(), plots.into()])
         .with_row_shares(vec![2.8, 1.8, 3.0]);
     Blueprint::new(root)
@@ -797,7 +793,7 @@ fn set_time(rec: &rerun::RecordingStream, time_ns: i64) {
     rec.set_duration_secs("time", time_ns as f64 * 1.0e-9);
 }
 
-fn point2(value: &fusion_schema::messages::Vec3) -> [f32; 2] {
+fn point2(value: &fusion_schema::messages::Vec2) -> [f32; 2] {
     [value.x as f32, value.y as f32]
 }
 

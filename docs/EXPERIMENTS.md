@@ -1,37 +1,38 @@
 # Experiments
 
-Each scenario defines vehicle motion, objects, sensors, baseline settings, a
-random seed, and scoring limits. Unknown YAML fields are rejected so a typo
-does not silently change the experiment.
+Start with `examples/initial.yaml`. It exposes the sensor rates, basic noise,
+field of view, range, objects, and vehicle motion. Unknown YAML fields are
+rejected so typos do not silently change a run.
 
-Run a scenario with:
+The examples add complexity in this order:
+
+| Example | Adds | Watch |
+| --- | --- | --- |
+| `initial.yaml` | GPS/IMU localization and camera/lidar tracking | vehicle and object error |
+| `imu_bias.yaml` | sensor bias, drift, and bias estimation | the two bias plots |
+| `outliers.yaml` | bad GPS fixes and observation gating | accepted and rejected update counts |
+| `timing.yaml` | latency, lidar scan time, and delayed-data handling | GPS age and error during turns |
+| `localization_sweep.yaml` | paired seeds over GPS settings | mean and spread of vehicle error |
+| `perception_sweep.yaml` | paired seeds over perception settings | object error and ego cost |
+
+The bias, outlier, and timing examples have short guides in
+[BIAS_EXPERIMENT.md](BIAS_EXPERIMENT.md),
+[OUTLIER_EXPERIMENT.md](OUTLIER_EXPERIMENT.md), and
+[TIMING_EXPERIMENT.md](TIMING_EXPERIMENT.md).
+
+Run an example with:
 
 ```sh
-fusion run examples/initial.yaml
+fusion run examples/imu_bias.yaml --view
 ```
 
-The default output is the next free `runs/runNNN` folder. An explicit folder is
-also accepted with `--output`.
-
-## Useful changes
-
-Localization settings live under `imu`, `gps`, and `ego_estimator`. Perception
-and tracking settings live under `camera`, `lidar`, and `object_tracker`.
-Changing camera or lidar must not change the vehicle estimate.
-
-The fastest useful experiments are GPS on versus off, low versus high GPS
-noise, camera versus lidar versus both, and truth ego versus estimated ego in
-the object tracker. The last comparison is generated automatically from one
-detection stream.
-
-`motion_speed_factor` changes how quickly the configured vehicle path is
-traversed while keeping its shape. Sensor rates remain samples per second, so a
-faster run gets fewer observations per meter.
+The default output is the next free `runs/runNNN` directory. Use `--output` only
+when a named location is useful.
 
 ## Sweeps
 
-A sweep replaces selected scenario fields with lists and runs their Cartesian
-product over paired seeds:
+A sweep replaces selected scenario fields with lists and runs every combination
+over the same seeds:
 
 ```yaml
 name: GPS noise and rate
@@ -42,21 +43,16 @@ parameters:
   gps.horizontal_position_stddev_m: [0.1, 0.5, 1.0]
 ```
 
-Run it with:
-
 ```sh
 fusion sweep examples/localization_sweep.yaml --output runs/localization-sweep
 ```
 
-The report includes every case, group means, sample standard deviation, and a
-warning when a group has fewer than three successful seeds. Object results
-include the paired error difference between estimated-ego and truth-ego
-tracking.
+The report contains every case, group means, sample standard deviation, and a
+warning for groups with fewer than three successful seeds.
 
-## Run contents
+## Run files
 
 ```text
-manifest.json
 scenario.resolved.yaml
 measurements.mcap
 truth.mcap
@@ -68,14 +64,6 @@ reports/baseline/summary.md
 reports/baseline/visualization.rrd
 ```
 
-`measurements.mcap` is estimator-visible. Normal localization and tracking do
-not receive `truth.mcap`. The truth-ego tracker is a labeled scoring control,
-not the normal data path.
-
-Metrics match truth only within `metrics.max_truth_match_gap_ns`. Reported
-`DIVERGED` status and exceeding an error threshold are counted separately.
-Time coverage describes the part of the run covered by valid output; it does
-not assume an estimator runs at IMU rate.
-
-One seed is useful for debugging. Use paired seeds before making a general
-claim.
+The resolved scenario records the defaults that were omitted from the example.
+One seed is useful for debugging. Use several paired seeds before making a
+general claim.

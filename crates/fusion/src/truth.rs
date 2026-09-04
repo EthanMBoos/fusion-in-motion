@@ -1,6 +1,5 @@
 use anyhow::{Result, ensure};
-use fusion_schema::messages::{EgoTruthState, ObjectTruthState, Vec3};
-use nalgebra::Vector3;
+use fusion_schema::messages::{EgoTruthState, ObjectTruthState, Vec2};
 
 use crate::{math, scenario::ResolvedScenario};
 
@@ -14,26 +13,6 @@ pub struct Sample {
     pub path_distance_m: f64,
     pub longitudinal_acceleration_mps2: f64,
     pub yaw_rate_radps: f64,
-}
-
-impl Sample {
-    pub fn velocity_world(self) -> Vector3<f64> {
-        Vector3::new(
-            self.speed_mps * self.yaw_world_from_body_rad.cos(),
-            self.speed_mps * self.yaw_world_from_body_rad.sin(),
-            0.0,
-        )
-    }
-
-    pub fn acceleration_world(self) -> Vector3<f64> {
-        Vector3::new(
-            self.longitudinal_acceleration_mps2 * self.yaw_world_from_body_rad.cos()
-                - self.speed_mps * self.yaw_rate_radps * self.yaw_world_from_body_rad.sin(),
-            self.longitudinal_acceleration_mps2 * self.yaw_world_from_body_rad.sin()
-                + self.speed_mps * self.yaw_rate_radps * self.yaw_world_from_body_rad.cos(),
-            0.0,
-        )
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,8 +32,6 @@ struct SegmentState {
 pub struct Trajectory {
     segments: Vec<SegmentState>,
     duration_s: f64,
-    world_frame: String,
-    body_frame: String,
 }
 
 impl Trajectory {
@@ -94,8 +71,6 @@ impl Trajectory {
         Ok(Self {
             segments,
             duration_s: scenario.effective_duration_s(),
-            world_frame: scenario.platform.world_frame.clone(),
-            body_frame: scenario.platform.body_frame.clone(),
         })
     }
 
@@ -119,23 +94,13 @@ impl Trajectory {
     pub fn truth_state(&self, time_ns: i64) -> EgoTruthState {
         let sample = self.sample_ns(time_ns);
         EgoTruthState {
-            truth_time_ns: time_ns,
-            pose_w_b: Some(math::yaw_pose(
+            time_ns,
+            pose_world: Some(math::pose2(
                 sample.x_world_m,
                 sample.y_world_m,
                 sample.yaw_world_from_body_rad,
-                &self.world_frame,
-                &self.body_frame,
             )),
-            velocity_world_mps: Some(math::vec3(sample.velocity_world())),
-            acceleration_world_mps2: Some(math::vec3(sample.acceleration_world())),
-            angular_velocity_body_radps: Some(math::vec3(Vector3::new(
-                0.0,
-                0.0,
-                sample.yaw_rate_radps,
-            ))),
             forward_speed_mps: sample.speed_mps,
-            path_distance_m: sample.path_distance_m,
         }
     }
 }
@@ -148,17 +113,15 @@ pub fn object_truth_states(scenario: &ResolvedScenario, period_ns: i64) -> Vec<O
         let time_s = time_ns as f64 * 1.0e-9;
         for object in &scenario.world.objects {
             states.push(ObjectTruthState {
-                object_id: object.id.clone(),
-                truth_time_ns: time_ns,
-                position_world_m: Some(Vec3 {
+                track_key: object.id.clone(),
+                time_ns,
+                position_world_m: Some(Vec2 {
                     x: object.initial_position_m.x + object.velocity_world_mps.x * time_s,
                     y: object.initial_position_m.y + object.velocity_world_mps.y * time_s,
-                    z: object.initial_position_m.z + object.velocity_world_mps.z * time_s,
                 }),
-                velocity_world_mps: Some(Vec3 {
+                velocity_world_mps: Some(Vec2 {
                     x: object.velocity_world_mps.x,
                     y: object.velocity_world_mps.y,
-                    z: object.velocity_world_mps.z,
                 }),
             });
         }
@@ -255,7 +218,7 @@ mod tests {
         );
         assert!((2.0 * nominal_mid.speed_mps - fast_mid.speed_mps).abs() < 1.0e-12);
 
-        let nominal_end = nominal.sample_s(nominal_scenario.duration_s);
+        let nominal_end = nominal.sample_s(nominal_scenario.duration_s());
         let fast_end = fast.sample_s(fast_scenario.effective_duration_s());
         assert!((nominal_end.x_world_m - fast_end.x_world_m).abs() < 1.0e-12);
         assert!((nominal_end.y_world_m - fast_end.y_world_m).abs() < 1.0e-12);

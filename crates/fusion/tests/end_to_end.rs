@@ -5,21 +5,24 @@ use fusion_in_motion::{
     bundle::{self, MeasurementRecord},
     estimator::{self, EgoMeasurement},
     scenario, sensor,
-    tracker::{self, EgoHistory, PerceptionMeasurement},
+    tracker::{self, EgoHistory, EgoSource, PerceptionMeasurement},
 };
-use fusion_schema::messages::EgoSource;
 use prost::Message;
 
 fn example() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/initial.yaml")
 }
 
+fn named_example(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../examples/{name}"))
+}
+
 fn split(records: &[MeasurementRecord]) -> (Vec<EgoMeasurement>, Vec<PerceptionMeasurement>) {
     let ego = records
         .iter()
         .filter_map(|record| match record {
-            MeasurementRecord::Imu(value) => Some(EgoMeasurement::Imu(value.clone())),
-            MeasurementRecord::Gps(value) => Some(EgoMeasurement::Gps(value.clone())),
+            MeasurementRecord::Imu(value) => Some(EgoMeasurement::Imu(*value)),
+            MeasurementRecord::Gps(value) => Some(EgoMeasurement::Gps(*value)),
             _ => None,
         })
         .collect();
@@ -35,17 +38,14 @@ fn split(records: &[MeasurementRecord]) -> (Vec<EgoMeasurement>, Vec<PerceptionM
 }
 
 #[test]
-fn generation_is_repeatable_and_has_the_intended_sensor_roles() -> Result<()> {
+fn generation_is_repeatable_and_contains_all_four_sensors() -> Result<()> {
     let scenario = scenario::load_and_resolve(&example())?;
     let first = sensor::generate(&scenario)?;
     let second = sensor::generate(&scenario)?;
     assert_eq!(first.measurements.len(), second.measurements.len());
     for (left, right) in first.measurements.iter().zip(&second.measurements) {
-        assert_eq!(left.header(), right.header());
+        assert_eq!(left.time(), right.time());
         match (left, right) {
-            (MeasurementRecord::Calibration(a), MeasurementRecord::Calibration(b)) => {
-                assert_eq!(a, b)
-            }
             (MeasurementRecord::Imu(a), MeasurementRecord::Imu(b)) => assert_eq!(a, b),
             (MeasurementRecord::Gps(a), MeasurementRecord::Gps(b)) => assert_eq!(a, b),
             (MeasurementRecord::Camera(a), MeasurementRecord::Camera(b)) => assert_eq!(a, b),
@@ -53,71 +53,33 @@ fn generation_is_repeatable_and_has_the_intended_sensor_roles() -> Result<()> {
             _ => panic!("measurement type changed"),
         }
     }
-    assert!(
-        first
-            .measurements
-            .iter()
-            .any(|record| matches!(record, MeasurementRecord::Gps(_)))
-    );
-    assert!(
-        first
-            .measurements
-            .iter()
-            .any(|record| matches!(record, MeasurementRecord::Camera(_)))
-    );
-    assert!(
-        first
-            .measurements
-            .iter()
-            .any(|record| matches!(record, MeasurementRecord::Lidar(_)))
-    );
+    for sensor in ["gps", "camera", "lidar"] {
+        let found = first.measurements.iter().any(|record| match sensor {
+            "gps" => matches!(record, MeasurementRecord::Gps(_)),
+            "camera" => matches!(record, MeasurementRecord::Camera(_)),
+            "lidar" => matches!(record, MeasurementRecord::Lidar(_)),
+            _ => false,
+        });
+        assert!(found, "missing {sensor}");
+    }
     assert_eq!(
         first
             .object_truth_states
             .iter()
-            .map(|state| &state.object_id)
+            .map(|state| &state.track_key)
             .collect::<std::collections::BTreeSet<_>>()
             .len(),
         2
     );
-    let visible_detection_ids = first
-        .measurements
-        .iter()
-        .flat_map(|record| match record {
-            MeasurementRecord::Camera(frame) => frame
-                .detections
-                .iter()
-                .map(|detection| detection.detection_id.as_str())
-                .collect::<Vec<_>>(),
-            MeasurementRecord::Lidar(scan) => scan
-                .detections
-                .iter()
-                .map(|detection| detection.detection_id.as_str())
-                .collect::<Vec<_>>(),
-            _ => Vec::new(),
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    let mapped_detection_ids = first
-        .observation_truth
-        .iter()
-        .flat_map(|truth| {
-            truth
-                .detection_truth
-                .iter()
-                .map(|mapping| mapping.detection_id.as_str())
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(visible_detection_ids, mapped_detection_ids);
     Ok(())
 }
 
 #[test]
-fn complete_run_writes_separate_ego_and_track_outputs() -> Result<()> {
+fn complete_run_writes_the_small_bundle() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let run = temp.path().join("run");
     fusion_in_motion::run_experiment(&example(), &run)?;
     for relative in [
-        "manifest.json",
         "scenario.resolved.yaml",
         "measurements.mcap",
         "truth.mcap",
@@ -130,9 +92,9 @@ fn complete_run_writes_separate_ego_and_track_outputs() -> Result<()> {
     ] {
         assert!(run.join(relative).is_file(), "missing {relative}");
     }
+    assert!(!run.join("manifest.json").exists());
     assert!(!bundle::read_ego_estimates(&run.join("estimates/ego-baseline.mcap"))?.is_empty());
     assert!(!bundle::read_tracks(&run.join("tracks/estimated-ego.mcap"))?.is_empty());
-    assert!(!bundle::read_tracks(&run.join("tracks/truth-ego.mcap"))?.is_empty());
     Ok(())
 }
 
@@ -147,14 +109,7 @@ fn perception_settings_cannot_change_ego_estimates() -> Result<()> {
     let changed = sensor::generate(&changed)?;
     let (baseline_ego, _) = split(&baseline.measurements);
     let (changed_ego, _) = split(&changed.measurements);
-    assert_eq!(baseline_ego.len(), changed_ego.len());
-    for (left, right) in baseline_ego.iter().zip(&changed_ego) {
-        match (left, right) {
-            (EgoMeasurement::Imu(a), EgoMeasurement::Imu(b)) => assert_eq!(a, b),
-            (EgoMeasurement::Gps(a), EgoMeasurement::Gps(b)) => assert_eq!(a, b),
-            _ => panic!("ego measurement type changed"),
-        }
-    }
+    assert_eq!(baseline_ego, changed_ego);
     let first = estimator::run_baseline(
         &scenario.ego_estimator,
         &scenario.imu,
@@ -172,7 +127,7 @@ fn perception_settings_cannot_change_ego_estimates() -> Result<()> {
 }
 
 #[test]
-fn both_tracker_modes_use_identical_detections() -> Result<()> {
+fn both_tracker_controls_use_the_same_detections() -> Result<()> {
     let scenario = scenario::load_and_resolve(&example())?;
     let generated = sensor::generate(&scenario)?;
     let (ego_measurements, perception) = split(&generated.measurements);
@@ -184,28 +139,16 @@ fn both_tracker_modes_use_identical_detections() -> Result<()> {
     )?;
     let estimated = tracker::run(
         &scenario.object_tracker,
-        &scenario.camera,
-        &scenario.lidar,
         &perception,
         &EgoHistory::from_estimates(&ego_run.estimates)?,
-        EgoSource::Estimated,
-        &scenario.platform.world_frame,
     )?;
     let truth = tracker::run(
         &scenario.object_tracker,
-        &scenario.camera,
-        &scenario.lidar,
         &perception,
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
-        EgoSource::Truth,
-        &scenario.platform.world_frame,
     )?;
-    assert_eq!(
-        estimated.processed_detection_ids,
-        truth.processed_detection_ids
-    );
-    assert!(estimated.diagnostics.waiting_for_range > 0);
-    assert!(estimated.tracks[0].covariance[0] > truth.tracks[0].covariance[0]);
+    assert_eq!(estimated.processed_detections, truth.processed_detections);
+    assert!(estimated.tracks[0].state_covariance[0] > truth.tracks[0].state_covariance[0]);
 
     let camera_only = perception
         .iter()
@@ -214,12 +157,8 @@ fn both_tracker_modes_use_identical_detections() -> Result<()> {
         .collect::<Vec<_>>();
     let camera_only = tracker::run(
         &scenario.object_tracker,
-        &scenario.camera,
-        &scenario.lidar,
         &camera_only,
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
-        EgoSource::Truth,
-        &scenario.platform.world_frame,
     )?;
     assert!(camera_only.tracks.is_empty());
     assert!(camera_only.diagnostics.waiting_for_range > 0);
@@ -228,7 +167,8 @@ fn both_tracker_modes_use_identical_detections() -> Result<()> {
 
 #[test]
 fn gps_reduces_position_drift() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&example())?;
+    let mut scenario = scenario::load_and_resolve(&example())?;
+    scenario.imu.accel_bias_mps2 = 0.025;
     let generated = sensor::generate(&scenario)?;
     let (with_gps, _) = split(&generated.measurements);
     let imu_only = with_gps
@@ -252,7 +192,7 @@ fn gps_reduces_position_drift() -> Result<()> {
         .ego_truth_states
         .last()
         .unwrap()
-        .pose_w_b
+        .pose_world
         .as_ref()
         .unwrap()
         .position
@@ -263,7 +203,7 @@ fn gps_reduces_position_drift() -> Result<()> {
             .estimates
             .last()
             .unwrap()
-            .pose_w_b
+            .pose_world
             .as_ref()
             .unwrap()
             .position
@@ -272,14 +212,13 @@ fn gps_reduces_position_drift() -> Result<()> {
         (position.x - truth.x).hypot(position.y - truth.y)
     };
     assert!(final_error(&fused) < final_error(&drifting));
-    assert!(fused.timing.replayed_measurements > 0);
-    assert!(fused.estimates.iter().any(|estimate| estimate.revision > 0));
     Ok(())
 }
 
 #[test]
-fn gps_outlier_is_rejected_and_reported() -> Result<()> {
-    let scenario = scenario::load_and_resolve(&example())?;
+fn gps_outlier_is_rejected_when_gating_is_enabled() -> Result<()> {
+    let mut scenario = scenario::load_and_resolve(&example())?;
+    scenario.ego_estimator.gps_gate_sigma = 4.0;
     let generated = sensor::generate(&scenario)?;
     let (mut ego_measurements, _) = split(&generated.measurements);
     let fix = ego_measurements
@@ -288,9 +227,8 @@ fn gps_outlier_is_rejected_and_reported() -> Result<()> {
             EgoMeasurement::Gps(fix) => Some(fix),
             EgoMeasurement::Imu(_) => None,
         })
-        .expect("starter scenario has GPS fixes");
+        .unwrap();
     fix.position_world_m.as_mut().unwrap().x += 1_000.0;
-
     let run = estimator::run_baseline(
         &scenario.ego_estimator,
         &scenario.imu,
@@ -299,18 +237,15 @@ fn gps_outlier_is_rejected_and_reported() -> Result<()> {
     )?;
     assert!(run.diagnostics.rejected_updates >= 1);
     assert!(run.diagnostics.applied_updates >= 1);
-    assert_eq!(run.diagnostics.invalid_updates, 0);
     Ok(())
 }
 
 #[test]
-fn three_dimensional_detection_values_round_trip() -> Result<()> {
+fn planar_detection_round_trips() -> Result<()> {
     let detection = fusion_schema::messages::CameraDetection {
-        detection_id: "detection".to_owned(),
-        association_key: "object".to_owned(),
-        azimuth_rad: 0.2,
-        elevation_rad: -0.4,
-        angular_covariance: vec![0.1, 0.0, 0.0, 0.2],
+        track_key: "object".to_owned(),
+        bearing_rad: 0.2,
+        bearing_variance_rad2: 0.01,
     };
     let decoded =
         fusion_schema::messages::CameraDetection::decode(detection.encode_to_vec().as_slice())?;
@@ -319,67 +254,82 @@ fn three_dimensional_detection_values_round_trip() -> Result<()> {
 }
 
 #[test]
-fn external_ego_csv_can_be_scored() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let run = temp.path().join("run");
-    fusion_in_motion::run_experiment(&example(), &run)?;
-    let truth = bundle::read_ego_truth(&run.join("truth.mcap"))?;
-    let csv = temp.path().join("perfect.csv");
-    let mut source = String::from("estimate_time_ns,x_m,y_m,yaw_rad\n");
-    for state in truth.iter().skip(1) {
-        let pose = state.pose_w_b.as_ref().unwrap();
-        let position = pose.position.as_ref().unwrap();
-        source.push_str(&format!(
-            "{},{},{},{}\n",
-            state.truth_time_ns,
-            position.x,
-            position.y,
-            fusion_in_motion::math::yaw_from_pose(pose)
-        ));
-    }
-    std::fs::write(&csv, source)?;
-    let metrics = fusion_in_motion::score_ego_csv(&run, &csv, "perfect")?;
-    assert!(metrics.position_rmse_m < 1.0e-12);
-    assert!(run.join("estimates/perfect.mcap").is_file());
+fn advanced_examples_turn_on_one_named_effect() -> Result<()> {
+    let starter = scenario::load_and_resolve(&example())?;
+    assert!(!starter.ego_estimator.estimate_imu_bias);
+    assert!(!starter.ego_estimator.timing_compensation);
+    assert_eq!(starter.gps.outlier_probability, 0.0);
+
+    let bias = scenario::load_and_resolve(&named_example("imu_bias.yaml"))?;
+    let generated = sensor::generate(&bias)?;
+    let (measurements, _) = split(&generated.measurements);
+    let run = estimator::run_baseline(&bias.ego_estimator, &bias.imu, &bias.gps, &measurements)?;
+    assert!(
+        run.estimates
+            .iter()
+            .all(|estimate| estimate.gyro_bias_z_radps.is_some())
+    );
+
+    let timing = scenario::load_and_resolve(&named_example("timing.yaml"))?;
+    let generated = sensor::generate(&timing)?;
+    let (measurements, _) = split(&generated.measurements);
+    let run = estimator::run_baseline(
+        &timing.ego_estimator,
+        &timing.imu,
+        &timing.gps,
+        &measurements,
+    )?;
+    assert!(run.timing.replayed_measurements > 0);
+
+    let outliers = scenario::load_and_resolve(&named_example("outliers.yaml"))?;
+    let generated = sensor::generate(&outliers)?;
+    let (measurements, _) = split(&generated.measurements);
+    let run = estimator::run_baseline(
+        &outliers.ego_estimator,
+        &outliers.imu,
+        &outliers.gps,
+        &measurements,
+    )?;
+    assert!(run.diagnostics.rejected_updates > 0);
     Ok(())
 }
 
 #[test]
-fn external_track_csv_can_be_scored() -> Result<()> {
+fn external_outputs_can_be_scored() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let run = temp.path().join("run");
     fusion_in_motion::run_experiment(&example(), &run)?;
-    let scenario = scenario::load_and_resolve(&run.join("scenario.resolved.yaml"))?;
-    let associations = scenario
-        .world
-        .objects
-        .iter()
-        .map(|object| (&object.id, &object.association_key))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let truth = bundle::read_object_truth(&run.join("truth.mcap"))?;
-    let csv = temp.path().join("perfect-tracks.csv");
-    let mut source =
-        String::from("estimate_time_ns,track_id,association_key,x_m,y_m,vx_mps,vy_mps\n");
-    for state in truth {
-        let position = state.position_world_m.as_ref().unwrap();
-        let velocity = state.velocity_world_mps.as_ref().unwrap();
-        let association = associations[&state.object_id];
+
+    let ego_truth = bundle::read_ego_truth(&run.join("truth.mcap"))?;
+    let ego_csv = temp.path().join("perfect-ego.csv");
+    let mut source = String::from("estimate_time_ns,x_m,y_m,yaw_rad\n");
+    for state in ego_truth.iter().skip(1) {
+        let pose = state.pose_world.as_ref().unwrap();
+        let position = pose.position.as_ref().unwrap();
         source.push_str(&format!(
-            "{},track-{},{},{},{},{},{}\n",
-            state.truth_time_ns,
-            association,
-            association,
-            position.x,
-            position.y,
-            velocity.x,
-            velocity.y,
+            "{},{},{},{}\n",
+            state.time_ns, position.x, position.y, pose.yaw_rad
         ));
     }
-    std::fs::write(&csv, source)?;
+    std::fs::write(&ego_csv, source)?;
+    let metrics = fusion_in_motion::score_ego_csv(&run, &ego_csv, "perfect")?;
+    assert!(metrics.position_rmse_m < 1.0e-12);
+
+    let object_truth = bundle::read_object_truth(&run.join("truth.mcap"))?;
+    let track_csv = temp.path().join("perfect-tracks.csv");
+    let mut source = String::from("estimate_time_ns,track_key,x_m,y_m,vx_mps,vy_mps\n");
+    for state in object_truth {
+        let position = state.position_world_m.as_ref().unwrap();
+        let velocity = state.velocity_world_mps.as_ref().unwrap();
+        source.push_str(&format!(
+            "{},{},{},{},{},{}\n",
+            state.time_ns, state.track_key, position.x, position.y, velocity.x, velocity.y,
+        ));
+    }
+    std::fs::write(&track_csv, source)?;
     let metrics =
-        fusion_in_motion::score_tracks_csv(&run, &csv, "perfect-tracks", EgoSource::Truth)?;
+        fusion_in_motion::score_tracks_csv(&run, &track_csv, "perfect-tracks", EgoSource::Truth)?;
     assert!(metrics.position_rmse_m < 1.0e-12);
     assert!(metrics.velocity_rmse_mps < 1.0e-12);
-    assert!(run.join("tracks/perfect-tracks.mcap").is_file());
     Ok(())
 }

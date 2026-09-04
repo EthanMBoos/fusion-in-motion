@@ -1,47 +1,43 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedScenario {
-    pub format_version: u32,
-    pub run_id: String,
-    pub duration_s: f64,
-    #[serde(default = "default_motion_speed_factor")]
-    pub motion_speed_factor: f64,
-    pub local_epoch: String,
     pub root_seed: u64,
-    pub platform: PlatformConfig,
+    #[serde(default = "one")]
+    pub motion_speed_factor: f64,
     pub world: WorldConfig,
     pub trajectory: Vec<MotionSegment>,
+    #[serde(default)]
     pub imu: ImuConfig,
+    #[serde(default)]
     pub gps: GpsConfig,
+    #[serde(default)]
     pub camera: CameraConfig,
+    #[serde(default)]
     pub lidar: LidarConfig,
+    #[serde(default)]
     pub ego_estimator: EgoEstimatorConfig,
+    #[serde(default)]
     pub object_tracker: ObjectTrackerConfig,
+    #[serde(default)]
     pub metrics: MetricsConfig,
 }
 
 impl ResolvedScenario {
-    pub fn effective_duration_s(&self) -> f64 {
-        self.duration_s / self.motion_speed_factor
+    pub fn duration_s(&self) -> f64 {
+        self.trajectory
+            .iter()
+            .map(|segment| segment.duration_s)
+            .sum()
     }
-}
 
-fn default_motion_speed_factor() -> f64 {
-    1.0
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PlatformConfig {
-    pub model: String,
-    pub body_frame: String,
-    pub world_frame: String,
+    pub fn effective_duration_s(&self) -> f64 {
+        self.duration_s() / self.motion_speed_factor
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,9 +50,8 @@ pub struct WorldConfig {
 #[serde(deny_unknown_fields)]
 pub struct ObjectConfig {
     pub id: String,
-    pub association_key: String,
-    pub initial_position_m: Vec3Config,
-    pub velocity_world_mps: Vec3Config,
+    pub initial_position_m: Vec2Config,
+    pub velocity_world_mps: Vec2Config,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,86 +65,106 @@ pub struct MotionSegment {
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Vec3Config {
+pub struct Vec2Config {
     pub x: f64,
     pub y: f64,
-    pub z: f64,
 }
 
-impl Vec3Config {
-    pub fn finite(self) -> bool {
-        self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
+impl Vec2Config {
+    fn finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SensorMountConfig {
-    pub frame: String,
-    pub position_m: Vec3Config,
-    pub roll_rad: f64,
-    pub pitch_rad: f64,
-    pub yaw_rad: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ImuConfig {
     pub enabled: bool,
-    pub instance_id: String,
-    pub mount: SensorMountConfig,
     pub rate_hz: f64,
-    pub clock_offset_ns: i64,
     pub latency_ns: i64,
+    pub clock_offset_ns: i64,
     pub gyro_white_noise_density_radps_sqrt_hz: f64,
     pub accel_white_noise_density_mps2_sqrt_hz: f64,
-    pub gyro_turn_on_bias_radps: Vec3Config,
-    pub accel_turn_on_bias_mps2: Vec3Config,
+    pub gyro_bias_radps: f64,
+    pub accel_bias_mps2: f64,
     pub gyro_bias_random_walk_radps_sqrt_s: f64,
     pub accel_bias_random_walk_mps2_sqrt_s: f64,
-    pub gyro_saturation_radps: f64,
-    pub accel_saturation_mps2: f64,
-    pub quantization_step: f64,
+}
+
+impl Default for ImuConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_hz: 100.0,
+            latency_ns: 0,
+            clock_offset_ns: 0,
+            gyro_white_noise_density_radps_sqrt_hz: 0.0008,
+            accel_white_noise_density_mps2_sqrt_hz: 0.012,
+            gyro_bias_radps: 0.0,
+            accel_bias_mps2: 0.0,
+            gyro_bias_random_walk_radps_sqrt_s: 0.0,
+            accel_bias_random_walk_mps2_sqrt_s: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct GpsConfig {
     pub enabled: bool,
-    pub instance_id: String,
-    pub mount: SensorMountConfig,
     pub rate_hz: f64,
     pub latency_ns: i64,
     pub horizontal_position_stddev_m: f64,
-    pub vertical_position_stddev_m: f64,
-    pub altitude_valid: bool,
+    pub outlier_probability: f64,
+    pub outlier_stddev_m: f64,
+}
+
+impl Default for GpsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_hz: 2.0,
+            latency_ns: 0,
+            horizontal_position_stddev_m: 0.25,
+            outlier_probability: 0.0,
+            outlier_stddev_m: 10.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct CameraConfig {
     pub enabled: bool,
-    pub instance_id: String,
-    pub mount: SensorMountConfig,
     pub rate_hz: f64,
     pub latency_ns: i64,
     pub horizontal_fov_rad: f64,
-    pub vertical_fov_rad: f64,
     pub max_range_m: f64,
     pub bearing_noise_stddev_rad: f64,
     pub detection_probability: f64,
 }
 
+impl Default for CameraConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_hz: 10.0,
+            latency_ns: 0,
+            horizontal_fov_rad: 2.8,
+            max_range_m: 25.0,
+            bearing_noise_stddev_rad: 0.006,
+            detection_probability: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct LidarConfig {
     pub enabled: bool,
-    pub instance_id: String,
-    pub mount: SensorMountConfig,
     pub rate_hz: f64,
     pub latency_ns: i64,
     pub horizontal_fov_rad: f64,
-    pub vertical_fov_rad: f64,
     pub max_range_m: f64,
     pub scan_duration_ns: i64,
     pub range_noise_stddev_m: f64,
@@ -157,12 +172,26 @@ pub struct LidarConfig {
     pub detection_probability: f64,
 }
 
+impl Default for LidarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_hz: 5.0,
+            latency_ns: 0,
+            horizontal_fov_rad: std::f64::consts::TAU,
+            max_range_m: 25.0,
+            scan_duration_ns: 0,
+            range_noise_stddev_m: 0.025,
+            bearing_noise_stddev_rad: 0.002,
+            detection_probability: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct EgoEstimatorConfig {
-    pub id: String,
-    pub output_world_frame: String,
-    pub output_body_frame: String,
+    pub estimate_imu_bias: bool,
     pub timing_compensation: bool,
     pub history_duration_ns: i64,
     pub gps_gate_sigma: f64,
@@ -173,22 +202,58 @@ pub struct EgoEstimatorConfig {
     pub initial_accel_bias_stddev_mps2: f64,
 }
 
+impl Default for EgoEstimatorConfig {
+    fn default() -> Self {
+        Self {
+            estimate_imu_bias: false,
+            timing_compensation: false,
+            history_duration_ns: 1_000_000_000,
+            gps_gate_sigma: 1.0e9,
+            initial_position_stddev_m: 0.5,
+            initial_yaw_stddev_rad: 0.1,
+            initial_speed_stddev_mps: 0.5,
+            initial_gyro_bias_stddev_radps: 0.1,
+            initial_accel_bias_stddev_mps2: 0.5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ObjectTrackerConfig {
-    pub id: String,
     pub timing_compensation: bool,
     pub history_duration_ns: i64,
     pub acceleration_noise_stddev_mps2: f64,
     pub gate_sigma: f64,
 }
 
+impl Default for ObjectTrackerConfig {
+    fn default() -> Self {
+        Self {
+            timing_compensation: false,
+            history_duration_ns: 1_000_000_000,
+            acceleration_noise_stddev_mps2: 0.5,
+            gate_sigma: 1.0e9,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct MetricsConfig {
     pub max_truth_match_gap_ns: i64,
     pub ego_divergence_position_error_m: f64,
     pub track_divergence_position_error_m: f64,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            max_truth_match_gap_ns: 10_000_000,
+            ego_divergence_position_error_m: 5.0,
+            track_divergence_position_error_m: 5.0,
+        }
+    }
 }
 
 pub fn load_and_resolve(path: &Path) -> Result<ResolvedScenario> {
@@ -200,217 +265,142 @@ pub fn load_and_resolve(path: &Path) -> Result<ResolvedScenario> {
     Ok(scenario)
 }
 
-pub fn validate(s: &ResolvedScenario) -> Result<()> {
+pub fn validate(scenario: &ResolvedScenario) -> Result<()> {
     ensure!(
-        s.format_version == 1,
-        "unsupported format_version {}",
-        s.format_version
-    );
-    ensure!(!s.run_id.trim().is_empty(), "run_id must not be empty");
-    ensure!(
-        s.platform.model == "planar_ground",
-        "only planar_ground is implemented"
-    );
-    ensure!(
-        s.duration_s.is_finite() && s.duration_s > 0.0,
-        "duration_s must be positive"
-    );
-    ensure!(
-        s.motion_speed_factor.is_finite() && s.motion_speed_factor > 0.0,
+        scenario.motion_speed_factor.is_finite() && scenario.motion_speed_factor > 0.0,
         "motion_speed_factor must be positive"
     );
     ensure!(
-        !s.platform.body_frame.is_empty()
-            && !s.platform.world_frame.is_empty()
-            && s.platform.body_frame != s.platform.world_frame,
-        "body and world frames must be nonempty and different"
+        scenario.imu.enabled,
+        "the vehicle estimator requires the IMU"
     );
-
-    let sensors = [
+    for (name, enabled, rate, latency) in [
         (
-            s.imu.enabled,
             "imu",
-            &s.imu.instance_id,
-            &s.imu.mount,
-            s.imu.rate_hz,
-            s.imu.latency_ns,
+            scenario.imu.enabled,
+            scenario.imu.rate_hz,
+            scenario.imu.latency_ns,
         ),
         (
-            s.gps.enabled,
             "gps",
-            &s.gps.instance_id,
-            &s.gps.mount,
-            s.gps.rate_hz,
-            s.gps.latency_ns,
+            scenario.gps.enabled,
+            scenario.gps.rate_hz,
+            scenario.gps.latency_ns,
         ),
         (
-            s.camera.enabled,
             "camera",
-            &s.camera.instance_id,
-            &s.camera.mount,
-            s.camera.rate_hz,
-            s.camera.latency_ns,
+            scenario.camera.enabled,
+            scenario.camera.rate_hz,
+            scenario.camera.latency_ns,
         ),
         (
-            s.lidar.enabled,
             "lidar",
-            &s.lidar.instance_id,
-            &s.lidar.mount,
-            s.lidar.rate_hz,
-            s.lidar.latency_ns,
+            scenario.lidar.enabled,
+            scenario.lidar.rate_hz,
+            scenario.lidar.latency_ns,
         ),
-    ];
-    let mut ids = BTreeSet::new();
-    let mut frames = BTreeSet::new();
-    for (enabled, name, id, mount, rate, latency) in sensors {
-        ensure!(
-            !id.is_empty() && ids.insert(id),
-            "sensor instance IDs must be nonempty and unique"
-        );
-        ensure!(
-            !mount.frame.is_empty() && frames.insert(&mount.frame),
-            "sensor frames must be nonempty and unique"
-        );
-        validate_mount(name, mount)?;
+    ] {
         if enabled {
-            validate_rate(&format!("{name}.rate_hz"), rate)?;
+            validate_rate(name, rate)?;
         }
-        ensure!(latency >= 0, "{name}.latency_ns must be nonnegative");
+        ensure!(latency >= 0, "{name} latency must be nonnegative");
     }
     ensure!(
-        s.imu.enabled,
-        "the planar baseline requires imu.enabled: true"
+        scenario.imu.clock_offset_ns >= 0,
+        "IMU clock offset must be nonnegative"
     );
-
-    validate_nonnegative("GPS horizontal noise", s.gps.horizontal_position_stddev_m)?;
-    validate_nonnegative("GPS vertical noise", s.gps.vertical_position_stddev_m)?;
-    validate_detection_sensor(
-        "camera",
-        s.camera.horizontal_fov_rad,
-        s.camera.vertical_fov_rad,
-        s.camera.max_range_m,
-        s.camera.detection_probability,
-    )?;
-    validate_detection_sensor(
-        "lidar",
-        s.lidar.horizontal_fov_rad,
-        s.lidar.vertical_fov_rad,
-        s.lidar.max_range_m,
-        s.lidar.detection_probability,
-    )?;
-    ensure!(
-        s.lidar.scan_duration_ns >= 0,
-        "lidar scan duration must be nonnegative"
-    );
-    validate_nonnegative("camera bearing noise", s.camera.bearing_noise_stddev_rad)?;
-    validate_nonnegative("lidar range noise", s.lidar.range_noise_stddev_m)?;
-    validate_nonnegative("lidar bearing noise", s.lidar.bearing_noise_stddev_rad)?;
-    validate_imu(&s.imu)?;
-    validate_world(s)?;
-    validate_trajectory(s)?;
-    validate_estimators(s)?;
-    ensure!(
-        s.metrics.max_truth_match_gap_ns >= 0,
-        "maximum truth match gap must be nonnegative"
-    );
-    ensure!(
-        s.metrics.ego_divergence_position_error_m > 0.0,
-        "ego divergence threshold must be positive"
-    );
-    ensure!(
-        s.metrics.track_divergence_position_error_m > 0.0,
-        "track divergence threshold must be positive"
-    );
-    Ok(())
-}
-
-fn validate_mount(name: &str, mount: &SensorMountConfig) -> Result<()> {
-    ensure!(
-        mount.position_m.finite(),
-        "{name} mount position must be finite"
-    );
-    for value in [mount.roll_rad, mount.pitch_rad, mount.yaw_rad] {
-        ensure!(value.is_finite(), "{name} mount angles must be finite");
-    }
-    ensure!(
-        mount.position_m.z.abs() < 1.0e-12
-            && mount.roll_rad.abs() < 1.0e-12
-            && mount.pitch_rad.abs() < 1.0e-12,
-        "planar_ground currently supports x/y/yaw sensor mounts only"
-    );
-    Ok(())
-}
-
-fn validate_imu(imu: &ImuConfig) -> Result<()> {
     for (name, value) in [
         (
-            "gyro noise density",
-            imu.gyro_white_noise_density_radps_sqrt_hz,
+            "gyro noise",
+            scenario.imu.gyro_white_noise_density_radps_sqrt_hz,
         ),
         (
-            "accel noise density",
-            imu.accel_white_noise_density_mps2_sqrt_hz,
+            "accelerometer noise",
+            scenario.imu.accel_white_noise_density_mps2_sqrt_hz,
         ),
         (
-            "gyro bias random walk",
-            imu.gyro_bias_random_walk_radps_sqrt_s,
+            "gyro bias walk",
+            scenario.imu.gyro_bias_random_walk_radps_sqrt_s,
         ),
         (
-            "accel bias random walk",
-            imu.accel_bias_random_walk_mps2_sqrt_s,
+            "accelerometer bias walk",
+            scenario.imu.accel_bias_random_walk_mps2_sqrt_s,
         ),
-        ("quantization step", imu.quantization_step),
+        ("GPS noise", scenario.gps.horizontal_position_stddev_m),
+        ("GPS outlier size", scenario.gps.outlier_stddev_m),
+        (
+            "camera bearing noise",
+            scenario.camera.bearing_noise_stddev_rad,
+        ),
+        ("lidar range noise", scenario.lidar.range_noise_stddev_m),
+        (
+            "lidar bearing noise",
+            scenario.lidar.bearing_noise_stddev_rad,
+        ),
     ] {
-        validate_nonnegative(name, value)?;
+        ensure!(
+            value.is_finite() && value >= 0.0,
+            "{name} must be finite and nonnegative"
+        );
     }
+    validate_detection_sensor("camera", &scenario.camera)?;
     ensure!(
-        imu.gyro_saturation_radps > 0.0 && imu.accel_saturation_mps2 > 0.0,
-        "IMU saturation limits must be positive"
+        (0.0..=1.0).contains(&scenario.gps.outlier_probability),
+        "GPS outlier probability must be in [0, 1]"
     );
+    validate_lidar(&scenario.lidar)?;
+    validate_world(&scenario.world)?;
+    validate_trajectory(&scenario.trajectory)?;
+    validate_estimators(scenario)?;
     Ok(())
 }
 
-fn validate_detection_sensor(
-    name: &str,
-    horizontal_fov_rad: f64,
-    vertical_fov_rad: f64,
-    max_range_m: f64,
-    detection_probability: f64,
-) -> Result<()> {
+fn validate_detection_sensor(name: &str, config: &CameraConfig) -> Result<()> {
     ensure!(
-        horizontal_fov_rad > 0.0 && horizontal_fov_rad <= std::f64::consts::TAU,
-        "{name} horizontal FOV must be in (0, 2pi]"
+        config.horizontal_fov_rad > 0.0 && config.horizontal_fov_rad <= std::f64::consts::TAU,
+        "{name} field of view must be in (0, 2pi]"
     );
     ensure!(
-        vertical_fov_rad > 0.0 && vertical_fov_rad <= std::f64::consts::PI,
-        "{name} vertical FOV must be in (0, pi]"
+        config.max_range_m.is_finite() && config.max_range_m > 0.0,
+        "{name} range must be positive"
     );
     ensure!(
-        max_range_m > 0.0 && max_range_m.is_finite(),
-        "{name} max range must be positive"
-    );
-    ensure!(
-        (0.0..=1.0).contains(&detection_probability),
+        (0.0..=1.0).contains(&config.detection_probability),
         "{name} detection probability must be in [0, 1]"
     );
     Ok(())
 }
 
-fn validate_world(s: &ResolvedScenario) -> Result<()> {
+fn validate_lidar(config: &LidarConfig) -> Result<()> {
     ensure!(
-        !s.world.objects.is_empty(),
+        config.horizontal_fov_rad > 0.0 && config.horizontal_fov_rad <= std::f64::consts::TAU,
+        "lidar field of view must be in (0, 2pi]"
+    );
+    ensure!(
+        config.max_range_m.is_finite() && config.max_range_m > 0.0,
+        "lidar range must be positive"
+    );
+    ensure!(
+        config.scan_duration_ns >= 0,
+        "lidar scan duration must be nonnegative"
+    );
+    ensure!(
+        (0.0..=1.0).contains(&config.detection_probability),
+        "lidar detection probability must be in [0, 1]"
+    );
+    Ok(())
+}
+
+fn validate_world(world: &WorldConfig) -> Result<()> {
+    ensure!(
+        !world.objects.is_empty(),
         "world must contain at least one object"
     );
     let mut ids = BTreeSet::new();
-    let mut associations = BTreeSet::new();
-    for object in &s.world.objects {
+    for object in &world.objects {
         ensure!(
             !object.id.is_empty() && ids.insert(&object.id),
             "object IDs must be nonempty and unique"
-        );
-        ensure!(
-            !object.association_key.is_empty() && associations.insert(&object.association_key),
-            "association keys must be nonempty and unique"
         );
         ensure!(
             object.initial_position_m.finite() && object.velocity_world_mps.finite(),
@@ -421,18 +411,17 @@ fn validate_world(s: &ResolvedScenario) -> Result<()> {
     Ok(())
 }
 
-fn validate_trajectory(s: &ResolvedScenario) -> Result<()> {
+fn validate_trajectory(trajectory: &[MotionSegment]) -> Result<()> {
     ensure!(
-        !s.trajectory.is_empty(),
+        !trajectory.is_empty(),
         "trajectory must contain at least one segment"
     );
     let mut ids = BTreeSet::new();
-    let mut duration = 0.0;
     let mut speed = 0.0;
-    for segment in &s.trajectory {
+    for segment in trajectory {
         ensure!(
             !segment.id.is_empty() && ids.insert(&segment.id),
-            "trajectory segment IDs must be nonempty and unique"
+            "trajectory IDs must be nonempty and unique"
         );
         ensure!(
             segment.duration_s.is_finite() && segment.duration_s > 0.0,
@@ -442,10 +431,9 @@ fn validate_trajectory(s: &ResolvedScenario) -> Result<()> {
         ensure!(
             segment.longitudinal_acceleration_mps2.is_finite()
                 && segment.yaw_rate_radps.is_finite(),
-            "segment {} motion values must be finite",
+            "segment {} motion must be finite",
             segment.id
         );
-        duration += segment.duration_s;
         speed += segment.longitudinal_acceleration_mps2 * segment.duration_s;
         ensure!(
             speed >= -1.0e-9,
@@ -453,69 +441,56 @@ fn validate_trajectory(s: &ResolvedScenario) -> Result<()> {
             segment.id
         );
     }
-    if (duration - s.duration_s).abs() > 1.0e-9 {
-        bail!(
-            "duration_s ({}) does not match trajectory duration ({duration})",
-            s.duration_s
-        );
-    }
     Ok(())
 }
 
-fn validate_estimators(s: &ResolvedScenario) -> Result<()> {
+fn validate_estimators(scenario: &ResolvedScenario) -> Result<()> {
     ensure!(
-        s.ego_estimator.output_world_frame == s.platform.world_frame
-            && s.ego_estimator.output_body_frame == s.platform.body_frame,
-        "ego estimator output frames must match platform frames"
-    );
-    ensure!(
-        !s.ego_estimator.id.is_empty() && !s.object_tracker.id.is_empty(),
-        "estimator IDs must not be empty"
-    );
-    ensure!(
-        s.ego_estimator.history_duration_ns >= 0 && s.object_tracker.history_duration_ns >= 0,
+        scenario.ego_estimator.history_duration_ns >= 0
+            && scenario.object_tracker.history_duration_ns >= 0,
         "history durations must be nonnegative"
     );
     for (name, value) in [
-        ("GPS gate", s.ego_estimator.gps_gate_sigma),
+        ("GPS gate", scenario.ego_estimator.gps_gate_sigma),
         (
             "initial position uncertainty",
-            s.ego_estimator.initial_position_stddev_m,
+            scenario.ego_estimator.initial_position_stddev_m,
         ),
         (
             "initial yaw uncertainty",
-            s.ego_estimator.initial_yaw_stddev_rad,
+            scenario.ego_estimator.initial_yaw_stddev_rad,
         ),
         (
             "initial speed uncertainty",
-            s.ego_estimator.initial_speed_stddev_mps,
+            scenario.ego_estimator.initial_speed_stddev_mps,
         ),
         (
             "initial gyro bias uncertainty",
-            s.ego_estimator.initial_gyro_bias_stddev_radps,
+            scenario.ego_estimator.initial_gyro_bias_stddev_radps,
         ),
         (
-            "initial accel bias uncertainty",
-            s.ego_estimator.initial_accel_bias_stddev_mps2,
+            "initial accelerometer bias uncertainty",
+            scenario.ego_estimator.initial_accel_bias_stddev_mps2,
         ),
         (
             "tracker acceleration noise",
-            s.object_tracker.acceleration_noise_stddev_mps2,
+            scenario.object_tracker.acceleration_noise_stddev_mps2,
         ),
-        ("tracker gate", s.object_tracker.gate_sigma),
+        ("tracker gate", scenario.object_tracker.gate_sigma),
     ] {
         ensure!(
             value.is_finite() && value > 0.0,
             "{name} must be positive and finite"
         );
     }
-    Ok(())
-}
-
-fn validate_nonnegative(name: &str, value: f64) -> Result<()> {
     ensure!(
-        value.is_finite() && value >= 0.0,
-        "{name} must be finite and nonnegative"
+        scenario.metrics.max_truth_match_gap_ns >= 0,
+        "truth match gap must be nonnegative"
+    );
+    ensure!(
+        scenario.metrics.ego_divergence_position_error_m > 0.0
+            && scenario.metrics.track_divergence_position_error_m > 0.0,
+        "error thresholds must be positive"
     );
     Ok(())
 }
@@ -523,12 +498,12 @@ fn validate_nonnegative(name: &str, value: f64) -> Result<()> {
 fn validate_rate(name: &str, value: f64) -> Result<()> {
     ensure!(
         value.is_finite() && value > 0.0,
-        "{name} must be positive and finite"
+        "{name} rate must be positive"
     );
     let period_ns = 1.0e9 / value;
     ensure!(
         (period_ns - period_ns.round()).abs() < 1.0e-6,
-        "{name} must map to an integer nanosecond period"
+        "{name} rate must map to an integer nanosecond period"
     );
     Ok(())
 }
@@ -537,8 +512,8 @@ pub fn canonical_yaml(scenario: &ResolvedScenario) -> Result<String> {
     Ok(serde_yaml_ng::to_string(scenario)?)
 }
 
-pub fn sha256(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+fn one() -> f64 {
+    1.0
 }
 
 #[cfg(test)]
@@ -547,7 +522,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_rejected() {
-        let yaml = "format_version: 1\nunknown: true\n";
+        let yaml = "root_seed: 1\nunknown: true\n";
         assert!(serde_yaml_ng::from_str::<ResolvedScenario>(yaml).is_err());
     }
 }

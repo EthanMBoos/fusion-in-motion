@@ -1,72 +1,44 @@
 # Simulator API
 
-The API separates the vehicle from the objects it sees.
+The messages in `proto/fusion.proto` match the planar simulator:
 
 ```text
 ImuSample + GpsFix -> EgoStateEstimate
 CameraFrame + LidarScan + EgoStateEstimate -> ObjectTrack
-EgoTruthState + ObjectTruthState -> scoring only
+EgoTruthState + ObjectTruthState -> scoring and display only
 ```
 
-All public messages are defined in `proto/fusion.proto`. Positions and
-velocities use three components, orientations use xyzw quaternions, and camera
-and lidar detections include elevation. The first implementation uses only
-x/y/yaw and planar velocity.
+The simulator supplies `track_key` on camera and lidar detections, so this
+version does not teach object association yet.
 
-## Time
+Positions use the fixed local world frame. Vehicle x points forward, y points
+left, and yaw is positive counterclockwise. All sensors are at the vehicle
+origin in this version.
 
-Every sensor record contains two times that matter:
+Each sensor record has a measurement time and an arrival time. They are equal
+in the starter. `examples/timing.yaml` adds latency and uses the measurement
+time when replaying delayed data. Each lidar detection has its own measurement
+time because one scan can collect returns at different times.
 
-- `reported_stamp_ns` is when the measurement describes the world;
-- `receipt_time_ns` is when the application receives it.
-
-Camera frames have one acquisition time. Each lidar detection also has an
-offset within its scan. The baseline can apply delayed data at measurement time
-and replay the later work, or apply it at arrival time for a timing comparison.
-
-## Frames
-
-`world_enu` is fixed at the start of a run. The vehicle body frame uses x
-forward, y left, and z up. Each sensor has a mount pose from its sensor frame to
-the body frame. The planar implementation accepts x/y/yaw mounts; the message
-types do not impose that limit.
-
-GPS fixes are already expressed in the local-world frame. Camera and lidar
-detections are expressed in their sensor frames. The object tracker combines
-them with the vehicle pose. That dependency is one way: an object detection
-cannot update `EgoStateEstimate`.
-
-## Baseline state layouts
-
-`EGO_STATE_MODEL_PLANAR` uses this covariance order:
+The starter vehicle covariance is a row-major 4×4 matrix ordered as:
 
 ```text
-x, y, yaw, forward speed, gyro-z bias, accelerometer-x bias
+x, y, yaw, forward speed
 ```
 
-`OBJECT_STATE_MODEL_PLANAR_CONSTANT_VELOCITY` uses:
+The bias experiment adds gyro and accelerometer bias, producing a 6×6 matrix:
 
 ```text
-object x, object y, object velocity x, object velocity y
+x, y, yaw, forward speed, gyro bias, accelerometer bias
 ```
 
-The model enum must be checked before reading a covariance matrix. A later 3D
-estimator will use a new model value and state layout.
+Object-track covariance is a row-major 4×4 matrix ordered as:
 
-## Object identity
+```text
+x, y, velocity x, velocity y
+```
 
-The first lesson supplies `association_key`, which tells the tracker which
-detections belong together. `detection_id` identifies one measurement. The
-hidden truth file maps that detection to the simulated object for scoring.
-
-Supplying association avoids mixing track management into the first fusion
-exercise. A later experiment can remove that help and add false detections,
-gating, and track creation/deletion.
-
-## Stored files
-
-`measurements.mcap` contains sensor calibration, IMU, GPS, camera, and lidar
-records. `truth.mcap` contains vehicle truth, object truth, sensor-effect truth,
-and detection-to-object truth. Normal localization and tracking read only the
-measurement file. Truth is opened afterward for scoring and for the explicitly
-labeled truth-ego tracker.
+`measurements.mcap` contains only data available to the estimators. `truth.mcap`
+contains vehicle truth, object truth, and simulated IMU bias. Normal estimation
+does not read truth. The purple truth-ego tracker is run separately as a scoring
+control.
