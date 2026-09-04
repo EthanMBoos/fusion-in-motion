@@ -30,9 +30,8 @@ message GpsFix {
 }
 
 message CameraDetection {
-  string track_key = 1;
-  double bearing_rad = 2;
-  double bearing_variance_rad2 = 3;
+  double bearing_rad = 1;
+  double bearing_variance_rad2 = 2;
 }
 
 message CameraFrame {
@@ -41,12 +40,11 @@ message CameraFrame {
 }
 
 message LidarDetection {
-  string track_key = 1;
-  sint64 measurement_time_ns = 2;
-  double range_m = 3;
-  double bearing_rad = 4;
-  double range_variance_m2 = 5;
-  double bearing_variance_rad2 = 6;
+  sint64 measurement_time_ns = 1;
+  double range_m = 2;
+  double bearing_rad = 3;
+  double range_variance_m2 = 4;
+  double bearing_variance_rad2 = 5;
 }
 
 message LidarScan {
@@ -84,7 +82,7 @@ message EgoStateEstimate {
 }
 
 message ObjectTrack {
-  string track_key = 1;
+  string track_id = 1;
   sint64 estimate_time_ns = 2;
   sint64 available_time_ns = 3;
   Vec2 position_world_m = 4;

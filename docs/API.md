@@ -8,8 +8,12 @@ CameraFrame + LidarScan + EgoStateEstimate -> ObjectTrack
 EgoTruthState + ObjectTruthState -> scoring and display only
 ```
 
-The simulator supplies `track_key` on camera and lidar detections, so this
-version does not teach object association yet.
+Camera and lidar detections do not contain object IDs. The baseline predicts
+each existing track, rejects implausible detection-to-track pairs, and finds a
+one-to-one assignment for the remaining pairs. Lidar can create a track because
+it measures range. Camera can update a track but cannot create one from a
+single direction measurement. `ObjectTrack.track_id` belongs to the tracker.
+Truth object IDs are read only by scoring and display code.
 
 Positions use the fixed local world frame. Vehicle x points forward, y points
 left, and yaw is positive counterclockwise. All sensors are at the vehicle

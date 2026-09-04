@@ -225,6 +225,8 @@ pub struct ObjectTrackerConfig {
     pub history_duration_ns: i64,
     pub acceleration_noise_stddev_mps2: f64,
     pub gate_sigma: f64,
+    pub confirmation_hits: usize,
+    pub max_missed_lidar_scans: usize,
 }
 
 impl Default for ObjectTrackerConfig {
@@ -233,7 +235,9 @@ impl Default for ObjectTrackerConfig {
             timing_compensation: false,
             history_duration_ns: 1_000_000_000,
             acceleration_noise_stddev_mps2: 0.5,
-            gate_sigma: 1.0e9,
+            gate_sigma: 4.0,
+            confirmation_hits: 2,
+            max_missed_lidar_scans: 3,
         }
     }
 }
@@ -486,6 +490,11 @@ fn validate_estimators(scenario: &ResolvedScenario) -> Result<()> {
     ensure!(
         scenario.metrics.max_truth_match_gap_ns >= 0,
         "truth match gap must be nonnegative"
+    );
+    ensure!(
+        scenario.object_tracker.confirmation_hits > 0
+            && scenario.object_tracker.max_missed_lidar_scans > 0,
+        "tracker confirmation hits and missed lidar scans must be positive"
     );
     ensure!(
         scenario.metrics.ego_divergence_position_error_m > 0.0

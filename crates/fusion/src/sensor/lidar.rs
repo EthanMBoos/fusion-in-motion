@@ -45,7 +45,6 @@ pub(super) fn generate(
                     continue;
                 }
                 detections.push(LidarDetection {
-                    track_key: object.id.clone(),
                     measurement_time_ns: time_ns,
                     range_m: (geometry.range_m
                         + config.range_noise_stddev_m

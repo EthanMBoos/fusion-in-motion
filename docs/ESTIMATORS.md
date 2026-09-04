@@ -26,7 +26,7 @@ estimator should not consume them in this project.
 Read camera and lidar detections plus an ego-state stream and export:
 
 ```text
-estimate_time_ns,track_key,x_m,y_m,vx_mps,vy_mps
+estimate_time_ns,track_id,x_m,y_m,vx_mps,vy_mps
 ```
 
 `available_time_ns` is optional.

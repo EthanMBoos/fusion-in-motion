@@ -59,7 +59,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::new(
-            "# Fusion in Motion\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose.\n\nCamera: cyan direction only. Lidar: blue range and direction.",
+            "# Fusion in Motion\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nCamera: cyan direction only. Lidar: blue range and direction.",
         ),
     )?;
     log_styles(&rec)?;
@@ -325,7 +325,7 @@ fn log_track_paths(
     for track in tracks {
         if let Some(position) = &track.position_world_m {
             by_track
-                .entry(&track.track_key)
+                .entry(&track.track_id)
                 .or_default()
                 .push((track.estimate_time_ns, point2(position)));
         }
@@ -443,8 +443,7 @@ fn log_objects(
                 format!("map/objects/truth/{}", state.track_key),
                 &rerun::Points2D::new([point2(position)])
                     .with_colors([TRUTH_COLOR])
-                    .with_radii([0.19])
-                    .with_labels([state.track_key.as_str()]),
+                    .with_radii([0.19]),
             )?;
         }
     }
@@ -459,12 +458,15 @@ fn log_objects(
         for track in tracks {
             if let Some(position) = &track.position_world_m {
                 set_time(rec, track.estimate_time_ns);
-                rec.log(
-                    format!("{root}/{}", track.track_key),
-                    &rerun::Points2D::new([point2(position)])
-                        .with_colors([color])
-                        .with_radii([0.12]),
-                )?;
+                let points = rerun::Points2D::new([point2(position)])
+                    .with_colors([color])
+                    .with_radii([0.12]);
+                let points = if root == "map/objects/estimated_ego" {
+                    points.with_labels([track.track_id.as_str()])
+                } else {
+                    points
+                };
+                rec.log(format!("{root}/{}", track.track_id), &points)?;
             }
         }
     }
@@ -563,7 +565,6 @@ fn log_errors(
     estimated_tracks: &[ObjectTrack],
     truth_tracks: &[ObjectTrack],
 ) -> Result<()> {
-    let _ = scenario;
     for estimate in estimates {
         let Some(truth) = ego_truth
             .iter()
@@ -599,10 +600,18 @@ fn log_errors(
         ("plots/objects/estimated_ego_error_m", estimated_tracks),
         ("plots/objects/truth_ego_error_m", truth_tracks),
     ] {
+        let assignments = crate::eval::track_truth_assignments(
+            tracks,
+            object_truth,
+            scenario.metrics.max_truth_match_gap_ns,
+        );
         for track in tracks {
+            let Some(truth_key) = assignments.get(&track.track_id) else {
+                continue;
+            };
             let Some(truth) = object_truth
                 .iter()
-                .filter(|truth| truth.track_key == track.track_key)
+                .filter(|truth| &truth.track_key == truth_key)
                 .min_by_key(|truth| (truth.time_ns - track.estimate_time_ns).abs())
             else {
                 continue;

@@ -16,6 +16,10 @@ vehicle pose. Purple uses the true vehicle pose as a control. Both receive the
 same detections. The gap between them shows how an error in the vehicle pose
 moves an object track.
 
+The detections do not say which object they came from. The tracker assigns them
+to its own `track-001`, `track-002`, and so on. See
+[ASSOCIATION_EXPERIMENT.md](ASSOCIATION_EXPERIMENT.md) for the focused lesson.
+
 The camera view uses equal-length cyan rays because the camera gives direction,
 not distance. Lidar gives both, so its blue rays end at the measured distance.
 The plots show vehicle error, object error, IMU readings, and detection counts.

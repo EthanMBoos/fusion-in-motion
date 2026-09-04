@@ -17,12 +17,10 @@ roll and pitch, three-axis sensor errors, camera projection, and harder-to-read
 covariance without changing the first lesson. Add 3D as a later drone track,
 after the planar path.
 
-The largest functional gap is object association. Camera and lidar detections
-currently carry the true `track_key`. The code is evaluating object state
-estimation after perfect association. It is not yet evaluating whether a
-tracker can form, maintain, and distinguish tracks. KITTI, nuScenes, and Waymo
-tracking scores only become meaningful after algorithm-facing detections lose
-the true object ID.
+The baseline now uses unlabeled camera and lidar detections. It gates possible
+matches, makes a one-to-one global nearest-neighbor assignment, and manages
+track birth, confirmation, coasting, and deletion. The next tracking work is to
+score identity continuity and add false detections and harder occlusions.
 
 The current camera/lidar comparison is also weak. A precise 360-degree lidar at
 5 Hz already supplies range and direction. The 10 Hz camera adds only more
@@ -44,7 +42,7 @@ The core covers:
 - planar vehicle and object motion;
 - sensor rate, noise, bias, field of view, missed observations, and time;
 - GPS/IMU vehicle estimation;
-- camera/lidar object estimation and, later, association and track life cycle;
+- camera/lidar object estimation, association, and track life cycle;
 - truth excluded from algorithm input;
 - repeatable scenarios, sweeps, scoring, and a dashboard that explains a run.
 
@@ -153,9 +151,8 @@ into direction; it does not supply object distance. Detector confidence is
 also not covariance and should not be converted directly into measurement
 noise.
 
-The current `track_key` is a truth ID that a real frontend cannot produce.
-Replace it with algorithm-facing detection data. Truth IDs remain in the truth
-recording and evaluator. The tracker owns association and track life cycle.
+Detections are unlabeled. Truth IDs remain in the truth recording and evaluator;
+the tracker creates its own IDs.
 
 Support two external perception modes. A detector frontend emits unassociated
 observations for the Rust tracker. An external tracker emits complete tracks
@@ -165,11 +162,10 @@ and tracking lessons.
 Implementation order:
 
 1. Add the small Python MCAP reader and external GPS/IMU estimator example.
-2. Replace truth-associated sensor inputs with an unlabeled detection API.
-3. Replay recorded camera detections through the Rust tracker.
-4. Add a Python image detector, keeping both frame time and result-arrival time.
-5. Add GTSAM for the 3D GPS/IMU smoother comparison.
-6. Add a lidar point-cloud frontend when raw lidar becomes a lesson.
+2. Replay recorded camera detections through the Rust tracker.
+3. Add a Python image detector, keeping both frame time and result-arrival time.
+4. Add GTSAM for the 3D GPS/IMU smoother comparison.
+5. Add a lidar point-cloud frontend when raw lidar becomes a lesson.
 
 ## What public benchmarks actually measure
 
@@ -197,16 +193,13 @@ An estimator must also report believable uncertainty. Use:
 NIS and NEES are statistical tests. Draw conclusions from independent seeds
 and chi-squared bounds, not from many correlated samples along one path.
 
-### Object state estimation with known association
+### Object state estimation
 
 For the current API, report per-object position and velocity RMSE, maximum and
 final error, time coverage, innovation statistics, and covariance consistency.
 Report both world-frame and vehicle-relative error. The truth-ego tracker is a
 good control: the difference between truth-ego and estimated-ego tracking
 shows how much vehicle error reached the object result.
-
-Call these results **oracle-associated tracking** or **per-object state
-estimation**, not full multi-object tracking.
 
 ### Multi-object tracking
 
@@ -219,7 +212,7 @@ The major benchmark families report:
 | Metric | Question it answers | Use here |
 | --- | --- | --- |
 | Position/velocity RMSE | How accurate is a correctly matched state? | Use at every stage |
-| GOSPA | How much error came from localization, missed objects, and false objects as a set? | Add when IDs are removed |
+| GOSPA | How much error came from localization, missed objects, and false objects as a set? | Add with the clutter lesson |
 | HOTA and its DetA/AssA/LocA parts | How well are detection, association, and localization balanced over a sequence? | Primary full-tracker teaching metric |
 | MOTA/MOTP | What is the combined miss, false-positive, and identity-switch cost; how precise are matches? | Report for comparison, not alone |
 | IDF1 and ID switches | Does an object retain the same identity? | Essential for crossings and occlusion |
@@ -265,11 +258,11 @@ adapter. The localization and tracking replays can use different datasets.
 | Capability | Current state | Supported conclusion |
 | --- | --- | --- |
 | GPS/IMU planar estimation | Present | Compare estimator accuracy, bias behavior, outlier handling, timing, and sensitivity under the stated model |
-| Camera/lidar object updates | Present | Compare bearing/range fusion after correct association |
+| Camera/lidar object updates | Present | Compare bearing/range fusion after association |
 | Ego error propagation | Present through estimated-ego and truth-ego runs | Isolate the cost of vehicle pose error on object state |
 | Statistical sweeps | Present | Compare configured variants across paired seeds |
-| Multi-object association | Not present; `track_key` comes from truth | No identity or association benchmark yet |
-| Track life cycle | Not meaningfully exercised | No track-birth, false-track, coasting, or deletion claim yet |
+| Multi-object association | Gated global nearest neighbor | Baseline association behavior; identity metrics still needed |
+| Track life cycle | Birth, confirmation, coasting, and deletion present | Basic track management without clutter |
 | Camera/lidar detector quality | Not present; measurements are analytic object observations | No AP or raw perception claim |
 | Sensor realism | White noise, random-walk bias, delay, FOV, range, and simple misses | Model-level behavior, not device fidelity |
 | 3D or drone tracking | Not present | Planar only |
@@ -304,7 +297,7 @@ The current starter is the quick tour. Each later demo isolates one new idea.
 | 8 | Camera plus lidar | camera/lidar rates and enable flags | lidar initializes range; camera sharpens direction between scans | Split out of starter |
 | 9 | Maneuvering target | target acceleration/turn, CV process noise, later CA/CTRV/IMM | lag, NIS, position/velocity error around maneuver | New |
 | 10 | Lost detections and track life | FOV, occlusion interval, detection probability, confirmation/deletion rules | initialization delay, coasting, gaps, deletion/reacquisition | New |
-| 11 | Association and clutter | object spacing, crossing angle, false detections, gate, assignment method | HOTA parts, GOSPA, ID switches, track timeline | New; requires removing truth IDs from algorithm input |
+| 11 | Association and clutter | object spacing, crossing angle, false detections, gate, assignment method | HOTA parts, GOSPA, ID switches, track timeline | Crossing baseline present; clutter and metrics remain |
 | 12 | Ego uncertainty cost | GPS condition, object range, vehicle turn | truth-ego control, estimated-ego result, global and relative error | Current mechanism; add focused scenario |
 | 13 | Mount and calibration error | camera/lidar position and yaw offset, time offset | biased object track with unchanged vehicle estimate | New |
 | 14 | Real log replay | dataset sequence and detector source | same reports plus dataset-specific metrics | New integration layer |

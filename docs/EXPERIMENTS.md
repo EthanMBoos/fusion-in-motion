@@ -12,13 +12,15 @@ The examples add complexity in this order:
 | `imu_bias.yaml` | sensor bias, drift, and bias estimation | the two bias plots |
 | `outliers.yaml` | bad GPS fixes and observation gating | accepted and rejected update counts |
 | `timing.yaml` | latency, lidar scan time, and delayed-data handling | GPS age and error during turns |
+| `association.yaml` | unlabeled detections, track IDs, and crossing objects | track IDs before and after the crossing |
 | `localization_sweep.yaml` | paired seeds over GPS settings | mean and spread of vehicle error |
 | `perception_sweep.yaml` | paired seeds over perception settings | object error and ego cost |
 
 The bias, outlier, and timing examples have short guides in
 [BIAS_EXPERIMENT.md](BIAS_EXPERIMENT.md),
 [OUTLIER_EXPERIMENT.md](OUTLIER_EXPERIMENT.md), and
-[TIMING_EXPERIMENT.md](TIMING_EXPERIMENT.md).
+[TIMING_EXPERIMENT.md](TIMING_EXPERIMENT.md). The association example is
+explained in [ASSOCIATION_EXPERIMENT.md](ASSOCIATION_EXPERIMENT.md).
 
 Run an example with:
 

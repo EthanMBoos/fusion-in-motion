@@ -149,6 +149,20 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
     )?;
     assert_eq!(estimated.processed_detections, truth.processed_detections);
     assert!(estimated.tracks[0].state_covariance[0] > truth.tracks[0].state_covariance[0]);
+    assert_eq!(
+        estimated
+            .tracks
+            .iter()
+            .map(|track| track.track_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["track-001", "track-002"])
+    );
+    assert!(
+        estimated
+            .tracks
+            .iter()
+            .all(|track| !matches!(track.track_id.as_str(), "stationary" | "moving"))
+    );
 
     let camera_only = perception
         .iter()
@@ -162,6 +176,29 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
     )?;
     assert!(camera_only.tracks.is_empty());
     assert!(camera_only.diagnostics.waiting_for_range > 0);
+    Ok(())
+}
+
+#[test]
+fn association_example_keeps_two_tracker_owned_ids() -> Result<()> {
+    let scenario = scenario::load_and_resolve(&named_example("association.yaml"))?;
+    let generated = sensor::generate(&scenario)?;
+    let (_, perception) = split(&generated.measurements);
+    let run = tracker::run(
+        &scenario.object_tracker,
+        &perception,
+        &EgoHistory::from_truth(&generated.ego_truth_states)?,
+    )?;
+    assert_eq!(run.diagnostics.created_tracks, 2);
+    assert_eq!(run.diagnostics.confirmed_tracks, 2);
+    assert_eq!(run.diagnostics.deleted_tracks, 0);
+    assert_eq!(
+        run.tracks
+            .iter()
+            .map(|track| track.track_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["track-001", "track-002"])
+    );
     Ok(())
 }
 
@@ -243,7 +280,6 @@ fn gps_outlier_is_rejected_when_gating_is_enabled() -> Result<()> {
 #[test]
 fn planar_detection_round_trips() -> Result<()> {
     let detection = fusion_schema::messages::CameraDetection {
-        track_key: "object".to_owned(),
         bearing_rad: 0.2,
         bearing_variance_rad2: 0.01,
     };
@@ -317,7 +353,7 @@ fn external_outputs_can_be_scored() -> Result<()> {
 
     let object_truth = bundle::read_object_truth(&run.join("truth.mcap"))?;
     let track_csv = temp.path().join("perfect-tracks.csv");
-    let mut source = String::from("estimate_time_ns,track_key,x_m,y_m,vx_mps,vy_mps\n");
+    let mut source = String::from("estimate_time_ns,track_id,x_m,y_m,vx_mps,vy_mps\n");
     for state in object_truth {
         let position = state.position_world_m.as_ref().unwrap();
         let velocity = state.velocity_world_mps.as_ref().unwrap();

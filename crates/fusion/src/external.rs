@@ -67,7 +67,7 @@ pub fn read_tracks_csv(
     let (columns, rows) = read_rows(path)?;
     for required in [
         "estimate_time_ns",
-        "track_key",
+        "track_id",
         "x_m",
         "y_m",
         "vx_mps",
@@ -92,7 +92,7 @@ pub fn read_tracks_csv(
             "track CSV line {line} contains a non-finite value"
         );
         tracks.push(ObjectTrack {
-            track_key: text(&columns, &fields, "track_key")?.to_owned(),
+            track_id: text(&columns, &fields, "track_id")?.to_owned(),
             estimate_time_ns,
             available_time_ns,
             position_world_m: Some(Vec2 { x, y }),

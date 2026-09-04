@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, ensure};
 use fusion_schema::messages::{
@@ -12,6 +12,8 @@ use crate::{math, scenario::ObjectTrackerConfig};
 
 type TrackState = SVector<f64, 4>;
 type TrackCovariance = SMatrix<f64, 4, 4>;
+type LidarJacobian = SMatrix<f64, 2, 4>;
+type LidarCovariance = SMatrix<f64, 2, 2>;
 
 #[derive(Debug, Clone)]
 pub enum PerceptionMeasurement {
@@ -40,6 +42,13 @@ pub struct TrackerDiagnostics {
     pub delayed_detections: usize,
     pub replayed_detections: usize,
     pub discarded_detections: usize,
+    pub associated_camera_detections: usize,
+    pub associated_lidar_detections: usize,
+    pub unmatched_camera_detections: usize,
+    pub unmatched_lidar_detections: usize,
+    pub created_tracks: usize,
+    pub confirmed_tracks: usize,
+    pub deleted_tracks: usize,
 }
 
 #[derive(Debug)]
@@ -160,23 +169,31 @@ enum Detection {
 }
 
 #[derive(Debug, Clone)]
-struct TimedDetection {
+struct DetectionBatch {
     measurement_time_ns: i64,
     arrival_time_ns: i64,
     stable_id: String,
-    detection: Detection,
+    detections: Vec<Detection>,
 }
 
-impl TimedDetection {
-    fn id(&self) -> &str {
-        &self.stable_id
+impl DetectionBatch {
+    fn is_lidar(&self) -> bool {
+        self.stable_id.starts_with("lidar:")
     }
 
-    fn track_key(&self) -> &str {
-        match &self.detection {
-            Detection::Camera(value) => &value.track_key,
-            Detection::Lidar(value) => &value.track_key,
+    fn detection_time_ns(&self, detection: &Detection) -> i64 {
+        match detection {
+            Detection::Camera(_) => self.measurement_time_ns,
+            Detection::Lidar(value) => value.measurement_time_ns,
         }
+    }
+
+    fn output_time_ns(&self) -> i64 {
+        self.detections
+            .iter()
+            .map(|detection| self.detection_time_ns(detection))
+            .max()
+            .unwrap_or(self.measurement_time_ns)
     }
 }
 
@@ -187,6 +204,13 @@ struct Filter {
     time_ns: i64,
 }
 
+struct ManagedTrack {
+    filter: Filter,
+    hits: usize,
+    missed_lidar_scans: usize,
+    confirmed: bool,
+}
+
 pub fn run(
     config: &ObjectTrackerConfig,
     measurements: &[PerceptionMeasurement],
@@ -194,84 +218,153 @@ pub fn run(
 ) -> Result<TrackerRun> {
     validate_delivery_order(measurements)?;
     let mut diagnostics = TrackerDiagnostics::default();
-    let mut detections = flatten(measurements);
-    diagnostics.received_detections = detections.len();
-    if config.timing_compensation {
-        let mut latest_measurement_time = None;
-        detections.retain(|detection| {
-            let age = latest_measurement_time
-                .map(|time: i64| time.saturating_sub(detection.measurement_time_ns))
-                .unwrap_or(0);
-            if age > 0 {
-                diagnostics.delayed_detections += 1;
-            }
-            latest_measurement_time = Some(
-                latest_measurement_time.map_or(detection.measurement_time_ns, |time: i64| {
-                    time.max(detection.measurement_time_ns)
-                }),
-            );
-            if age > config.history_duration_ns {
-                diagnostics.discarded_detections += 1;
-                false
-            } else {
-                if age > 0 {
-                    diagnostics.replayed_detections += 1;
-                }
-                true
-            }
-        });
-        detections.sort_by_key(|detection| {
-            (
-                detection.measurement_time_ns,
-                detection.arrival_time_ns,
-                detection.id().to_owned(),
-            )
-        });
-    } else {
-        for detection in &mut detections {
-            detection.measurement_time_ns = detection.arrival_time_ns;
-        }
-    }
+    let mut batches = flatten(measurements);
+    diagnostics.received_detections = batches.iter().map(|batch| batch.detections.len()).sum();
+    prepare_timing(config, &mut batches, &mut diagnostics);
 
-    let mut filters = BTreeMap::<String, Filter>::new();
+    let mut filters = BTreeMap::<String, ManagedTrack>::new();
+    let mut next_track_number = 1_u64;
     let mut tracks = Vec::new();
     let mut processed_detections = Vec::new();
-    for detection in detections {
-        let Some(ego) = ego_history.sample(detection.measurement_time_ns) else {
-            diagnostics.missing_ego_pose += 1;
-            continue;
-        };
-        let key = detection.track_key().to_owned();
-        if !filters.contains_key(&key) {
-            let Detection::Lidar(lidar_detection) = &detection.detection else {
-                diagnostics.waiting_for_range += 1;
-                continue;
-            };
-            filters.insert(
-                key.clone(),
-                initialize(lidar_detection, ego, detection.measurement_time_ns),
-            );
-            diagnostics.applied_updates += 1;
-        } else {
-            let filter = filters.get_mut(&key).expect("checked filter presence");
+
+    for batch in batches {
+        let egos = batch
+            .detections
+            .iter()
+            .map(|detection| ego_history.sample(batch.detection_time_ns(detection)))
+            .collect::<Vec<_>>();
+        diagnostics.missing_ego_pose += egos.iter().filter(|ego| ego.is_none()).count();
+
+        let track_ids = filters.keys().cloned().collect::<Vec<_>>();
+        let associations = associate(
+            &track_ids,
+            &filters,
+            &batch,
+            &egos,
+            config.gate_sigma,
+            config.acceleration_noise_stddev_mps2,
+        );
+        let matched_tracks = associations
+            .iter()
+            .map(|(track_index, _)| track_ids[*track_index].clone())
+            .collect::<BTreeSet<_>>();
+        let matched_detections = associations
+            .iter()
+            .map(|(_, detection_index)| *detection_index)
+            .collect::<BTreeSet<_>>();
+
+        for (track_index, detection_index) in associations {
+            let track_id = &track_ids[track_index];
+            let detection = &batch.detections[detection_index];
+            let ego = egos[detection_index].expect("association requires ego pose");
+            let detection_time_ns = batch.detection_time_ns(detection);
+            let track = filters.get_mut(track_id).expect("associated track exists");
             propagate(
-                filter,
-                detection.measurement_time_ns,
+                &mut track.filter,
+                detection_time_ns,
                 config.acceleration_noise_stddev_mps2,
             )?;
-            let result = match &detection.detection {
-                Detection::Camera(value) => update_camera(filter, value, ego, config.gate_sigma),
-                Detection::Lidar(value) => update_lidar(filter, value, ego, config.gate_sigma),
+            let result = match detection {
+                Detection::Camera(value) => {
+                    update_camera(&mut track.filter, value, ego, config.gate_sigma)
+                }
+                Detection::Lidar(value) => {
+                    update_lidar(&mut track.filter, value, ego, config.gate_sigma)
+                }
             };
             match result {
-                TrackUpdate::Applied => diagnostics.applied_updates += 1,
+                TrackUpdate::Applied => {
+                    diagnostics.applied_updates += 1;
+                    match detection {
+                        Detection::Camera(_) => {
+                            diagnostics.associated_camera_detections += 1;
+                            track.missed_lidar_scans = 0;
+                        }
+                        Detection::Lidar(_) => {
+                            diagnostics.associated_lidar_detections += 1;
+                            track.missed_lidar_scans = 0;
+                        }
+                    }
+                    track.hits += 1;
+                    if !track.confirmed && track.hits >= config.confirmation_hits {
+                        track.confirmed = true;
+                        diagnostics.confirmed_tracks += 1;
+                    }
+                }
                 TrackUpdate::Rejected => diagnostics.rejected_updates += 1,
                 TrackUpdate::Invalid => diagnostics.invalid_updates += 1,
             }
         }
-        processed_detections.push(detection.id().to_owned());
-        let filter = filters.get(&key).expect("initialized or updated filter");
-        tracks.push(to_track(filter, &key, detection.arrival_time_ns));
+
+        if batch.is_lidar() {
+            for track_id in &track_ids {
+                if !matched_tracks.contains(track_id) {
+                    filters
+                        .get_mut(track_id)
+                        .expect("existing track")
+                        .missed_lidar_scans += 1;
+                }
+            }
+        }
+
+        for (detection_index, detection) in batch.detections.iter().enumerate() {
+            if matched_detections.contains(&detection_index) || egos[detection_index].is_none() {
+                continue;
+            }
+            match detection {
+                Detection::Camera(_) => {
+                    diagnostics.unmatched_camera_detections += 1;
+                    diagnostics.waiting_for_range += 1;
+                }
+                Detection::Lidar(value) => {
+                    diagnostics.unmatched_lidar_detections += 1;
+                    let track_id = format!("track-{next_track_number:03}");
+                    next_track_number += 1;
+                    let confirmed = config.confirmation_hits == 1;
+                    filters.insert(
+                        track_id,
+                        ManagedTrack {
+                            filter: initialize(
+                                value,
+                                egos[detection_index].expect("checked ego pose"),
+                                batch.detection_time_ns(detection),
+                            ),
+                            hits: 1,
+                            missed_lidar_scans: 0,
+                            confirmed,
+                        },
+                    );
+                    diagnostics.created_tracks += 1;
+                    diagnostics.applied_updates += 1;
+                    if confirmed {
+                        diagnostics.confirmed_tracks += 1;
+                    }
+                }
+            }
+        }
+
+        let before = filters.len();
+        filters.retain(|_, track| track.missed_lidar_scans < config.max_missed_lidar_scans);
+        diagnostics.deleted_tracks += before - filters.len();
+
+        let output_time_ns = batch.output_time_ns();
+        for (track_id, track) in filters.iter().filter(|(_, track)| track.confirmed) {
+            let mut predicted = track.filter.clone();
+            propagate(
+                &mut predicted,
+                output_time_ns,
+                config.acceleration_noise_stddev_mps2,
+            )?;
+            tracks.push(to_track(&predicted, track_id, batch.arrival_time_ns));
+        }
+
+        processed_detections.extend(
+            batch
+                .detections
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("{}:{index}", batch.stable_id)),
+        );
     }
 
     Ok(TrackerRun {
@@ -281,34 +374,97 @@ pub fn run(
     })
 }
 
-fn flatten(measurements: &[PerceptionMeasurement]) -> Vec<TimedDetection> {
-    let mut detections = Vec::new();
-    for (record_index, measurement) in measurements.iter().enumerate() {
-        let time = measurement.time();
-        match measurement {
-            PerceptionMeasurement::Camera(frame) => {
-                for (detection_index, detection) in frame.detections.iter().enumerate() {
-                    detections.push(TimedDetection {
-                        measurement_time_ns: time.measurement_time_ns,
-                        arrival_time_ns: time.arrival_time_ns,
-                        stable_id: format!("camera:{record_index}:{detection_index}"),
-                        detection: Detection::Camera(detection.clone()),
-                    });
-                }
+fn prepare_timing(
+    config: &ObjectTrackerConfig,
+    batches: &mut Vec<DetectionBatch>,
+    diagnostics: &mut TrackerDiagnostics,
+) {
+    if config.timing_compensation {
+        let mut latest_measurement_time = None;
+        batches.retain(|batch| {
+            let age = latest_measurement_time
+                .map(|time: i64| time.saturating_sub(batch.measurement_time_ns))
+                .unwrap_or(0);
+            let count = batch.detections.len();
+            if age > 0 {
+                diagnostics.delayed_detections += count;
             }
-            PerceptionMeasurement::Lidar(scan) => {
-                for (detection_index, detection) in scan.detections.iter().enumerate() {
-                    detections.push(TimedDetection {
-                        measurement_time_ns: detection.measurement_time_ns,
-                        arrival_time_ns: time.arrival_time_ns,
-                        stable_id: format!("lidar:{record_index}:{detection_index}"),
-                        detection: Detection::Lidar(detection.clone()),
-                    });
+            latest_measurement_time = Some(
+                latest_measurement_time.map_or(batch.measurement_time_ns, |time: i64| {
+                    time.max(batch.measurement_time_ns)
+                }),
+            );
+            if age > config.history_duration_ns {
+                diagnostics.discarded_detections += count;
+                false
+            } else {
+                if age > 0 {
+                    diagnostics.replayed_detections += count;
+                }
+                true
+            }
+        });
+        batches.sort_by(|left, right| {
+            (
+                left.measurement_time_ns,
+                left.arrival_time_ns,
+                &left.stable_id,
+            )
+                .cmp(&(
+                    right.measurement_time_ns,
+                    right.arrival_time_ns,
+                    &right.stable_id,
+                ))
+        });
+    } else {
+        for batch in batches {
+            batch.measurement_time_ns = batch.arrival_time_ns;
+            for detection in &mut batch.detections {
+                if let Detection::Lidar(value) = detection {
+                    value.measurement_time_ns = batch.arrival_time_ns;
                 }
             }
         }
     }
-    detections
+}
+
+fn flatten(measurements: &[PerceptionMeasurement]) -> Vec<DetectionBatch> {
+    measurements
+        .iter()
+        .enumerate()
+        .map(|(record_index, measurement)| {
+            let time = measurement.time();
+            match measurement {
+                PerceptionMeasurement::Camera(frame) => DetectionBatch {
+                    measurement_time_ns: time.measurement_time_ns,
+                    arrival_time_ns: time.arrival_time_ns,
+                    stable_id: format!("camera:{record_index}"),
+                    detections: frame
+                        .detections
+                        .iter()
+                        .cloned()
+                        .map(Detection::Camera)
+                        .collect(),
+                },
+                PerceptionMeasurement::Lidar(scan) => DetectionBatch {
+                    measurement_time_ns: scan
+                        .detections
+                        .iter()
+                        .map(|detection| detection.measurement_time_ns)
+                        .min()
+                        .unwrap_or(time.measurement_time_ns),
+                    arrival_time_ns: time.arrival_time_ns,
+                    stable_id: format!("lidar:{record_index}"),
+                    detections: scan
+                        .detections
+                        .iter()
+                        .cloned()
+                        .map(Detection::Lidar)
+                        .collect(),
+                },
+            }
+        })
+        .collect()
 }
 
 fn validate_delivery_order(measurements: &[PerceptionMeasurement]) -> Result<()> {
@@ -324,6 +480,72 @@ fn validate_delivery_order(measurements: &[PerceptionMeasurement]) -> Result<()>
         previous = Some(delivery);
     }
     Ok(())
+}
+
+fn associate(
+    track_ids: &[String],
+    tracks: &BTreeMap<String, ManagedTrack>,
+    batch: &DetectionBatch,
+    egos: &[Option<EgoPose>],
+    gate_sigma: f64,
+    acceleration_noise_stddev_mps2: f64,
+) -> Vec<(usize, usize)> {
+    if track_ids.is_empty() || batch.detections.is_empty() {
+        return Vec::new();
+    }
+    let unmatched_cost = gate_sigma.powi(2) + 1.0;
+    let invalid_cost = unmatched_cost * 1.0e6;
+    let mut costs = Vec::with_capacity(track_ids.len());
+    for track_id in track_ids {
+        let mut row = Vec::with_capacity(batch.detections.len() + track_ids.len());
+        let track = &tracks[track_id];
+        for (index, detection) in batch.detections.iter().enumerate() {
+            let cost = egos[index]
+                .and_then(|ego| {
+                    let mut predicted = track.filter.clone();
+                    propagate(
+                        &mut predicted,
+                        batch.detection_time_ns(detection),
+                        acceleration_noise_stddev_mps2,
+                    )
+                    .ok()?;
+                    normalized_innovation_squared(&predicted, detection, ego)
+                })
+                .filter(|cost| cost.sqrt() <= gate_sigma)
+                .unwrap_or(invalid_cost);
+            row.push(cost);
+        }
+        row.extend(std::iter::repeat_n(unmatched_cost, track_ids.len()));
+        costs.push(row);
+    }
+    math::minimum_cost_assignment(&costs)
+        .into_iter()
+        .enumerate()
+        .filter(|(track_index, detection_index)| {
+            *detection_index < batch.detections.len()
+                && costs[*track_index][*detection_index] < unmatched_cost
+        })
+        .collect()
+}
+
+fn normalized_innovation_squared(
+    filter: &Filter,
+    detection: &Detection,
+    ego: EgoPose,
+) -> Option<f64> {
+    match detection {
+        Detection::Camera(value) => {
+            let (residual, jacobian, variance) = camera_innovation(filter, value, ego)?;
+            Some(residual.powi(2) / innovation_variance(filter, jacobian, variance)?)
+        }
+        Detection::Lidar(value) => {
+            let (residual, jacobian, covariance) = lidar_innovation(filter, value, ego)?;
+            let innovation = jacobian * filter.covariance * jacobian.transpose() + covariance;
+            let inverse = innovation.try_inverse()?;
+            let cost = (residual.transpose() * inverse * residual)[0];
+            cost.is_finite().then_some(cost)
+        }
+    }
 }
 
 fn initialize(detection: &LidarDetection, ego: EgoPose, time_ns: i64) -> Filter {
@@ -393,16 +615,15 @@ enum TrackUpdate {
     Invalid,
 }
 
-fn update_camera(
-    filter: &mut Filter,
+fn camera_innovation(
+    filter: &Filter,
     detection: &CameraDetection,
     ego: EgoPose,
-    gate_sigma: f64,
-) -> TrackUpdate {
+) -> Option<(f64, TrackState, f64)> {
     let displacement = Vector2::new(filter.state[0], filter.state[1]) - ego.position;
     let range_squared = displacement.norm_squared();
     if range_squared <= 1.0e-12 {
-        return TrackUpdate::Invalid;
+        return None;
     }
     let predicted = math::wrap_angle(displacement.y.atan2(displacement.x) - ego.yaw);
     let mut jacobian = TrackState::zeros();
@@ -414,13 +635,80 @@ fn update_camera(
         -1.0,
     );
     let ego_variance = (ego_jacobian.transpose() * ego.covariance_xy_yaw * ego_jacobian)[0];
-    apply_track_scalar(
-        filter,
+    Some((
         math::wrap_angle(detection.bearing_rad - predicted),
         jacobian,
         detection.bearing_variance_rad2 + ego_variance.max(0.0),
-        gate_sigma,
-    )
+    ))
+}
+
+fn lidar_innovation(
+    filter: &Filter,
+    detection: &LidarDetection,
+    ego: EgoPose,
+) -> Option<(Vector2<f64>, LidarJacobian, LidarCovariance)> {
+    let displacement = Vector2::new(filter.state[0], filter.state[1]) - ego.position;
+    let range_squared = displacement.norm_squared();
+    let range = range_squared.sqrt();
+    if range <= 1.0e-9 {
+        return None;
+    }
+    let predicted_bearing = math::wrap_angle(displacement.y.atan2(displacement.x) - ego.yaw);
+    let residual = Vector2::new(
+        detection.range_m - range,
+        math::wrap_angle(detection.bearing_rad - predicted_bearing),
+    );
+    let jacobian = LidarJacobian::from_row_slice(&[
+        displacement.x / range,
+        displacement.y / range,
+        0.0,
+        0.0,
+        -displacement.y / range_squared,
+        displacement.x / range_squared,
+        0.0,
+        0.0,
+    ]);
+    let ego_jacobian = SMatrix::<f64, 2, 3>::from_row_slice(&[
+        -displacement.x / range,
+        -displacement.y / range,
+        0.0,
+        displacement.y / range_squared,
+        -displacement.x / range_squared,
+        -1.0,
+    ]);
+    let sensor_covariance = LidarCovariance::from_diagonal(&Vector2::new(
+        detection.range_variance_m2,
+        detection.bearing_variance_rad2,
+    ));
+    let covariance =
+        sensor_covariance + ego_jacobian * ego.covariance_xy_yaw * ego_jacobian.transpose();
+    Some((residual, jacobian, covariance))
+}
+
+fn innovation_variance(
+    filter: &Filter,
+    jacobian: TrackState,
+    measurement_variance: f64,
+) -> Option<f64> {
+    if !measurement_variance.is_finite() || measurement_variance < 0.0 {
+        return None;
+    }
+    let variance = (jacobian.transpose() * filter.covariance * jacobian)[0] + measurement_variance;
+    (variance.is_finite() && variance > 1.0e-15).then_some(variance)
+}
+
+fn update_camera(
+    filter: &mut Filter,
+    detection: &CameraDetection,
+    ego: EgoPose,
+    gate_sigma: f64,
+) -> TrackUpdate {
+    let Some((residual, jacobian, measurement_variance)) =
+        camera_innovation(filter, detection, ego)
+    else {
+        return TrackUpdate::Invalid;
+    };
+    apply_track_scalar(filter, residual, jacobian, measurement_variance, gate_sigma)
 }
 
 fn update_lidar(
@@ -429,47 +717,33 @@ fn update_lidar(
     ego: EgoPose,
     gate_sigma: f64,
 ) -> TrackUpdate {
-    let before = filter.clone();
-    let displacement = Vector2::new(filter.state[0], filter.state[1]) - ego.position;
-    let range_squared = displacement.norm_squared();
-    let range = range_squared.sqrt();
-    if range <= 1.0e-9 {
+    let Some((residual, jacobian, measurement_covariance)) =
+        lidar_innovation(filter, detection, ego)
+    else {
+        return TrackUpdate::Invalid;
+    };
+    if !residual.iter().all(|value| value.is_finite())
+        || !measurement_covariance.iter().all(|value| value.is_finite())
+    {
         return TrackUpdate::Invalid;
     }
-    let mut range_jacobian = TrackState::zeros();
-    range_jacobian[0] = displacement.x / range;
-    range_jacobian[1] = displacement.y / range;
-    let ego_range_jacobian =
-        SVector::<f64, 3>::new(-displacement.x / range, -displacement.y / range, 0.0);
-    let ego_range_variance =
-        (ego_range_jacobian.transpose() * ego.covariance_xy_yaw * ego_range_jacobian)[0];
-    let range_result = apply_track_scalar(
-        filter,
-        detection.range_m - range,
-        range_jacobian,
-        detection.range_variance_m2 + ego_range_variance.max(0.0),
-        gate_sigma,
-    );
-    if range_result != TrackUpdate::Applied {
-        return range_result;
+    let innovation = jacobian * filter.covariance * jacobian.transpose() + measurement_covariance;
+    let Some(inverse) = innovation.try_inverse() else {
+        return TrackUpdate::Invalid;
+    };
+    let normalized_squared = (residual.transpose() * inverse * residual)[0];
+    if !normalized_squared.is_finite() {
+        return TrackUpdate::Invalid;
     }
-    let bearing_result = update_camera(
-        filter,
-        &CameraDetection {
-            track_key: detection.track_key.clone(),
-            bearing_rad: detection.bearing_rad,
-            bearing_variance_rad2: detection.bearing_variance_rad2,
-        },
-        EgoPose {
-            yaw: math::wrap_angle(ego.yaw),
-            ..ego
-        },
-        gate_sigma,
-    );
-    if bearing_result != TrackUpdate::Applied {
-        *filter = before;
+    if normalized_squared.sqrt() > gate_sigma {
+        return TrackUpdate::Rejected;
     }
-    bearing_result
+    let gain = filter.covariance * jacobian.transpose() * inverse;
+    let state = filter.state + gain * residual;
+    let left = TrackCovariance::identity() - gain * jacobian;
+    let covariance = left * filter.covariance * left.transpose()
+        + gain * measurement_covariance * gain.transpose();
+    commit_update(filter, state, covariance)
 }
 
 fn apply_track_scalar(
@@ -479,22 +753,28 @@ fn apply_track_scalar(
     measurement_variance: f64,
     gate_sigma: f64,
 ) -> TrackUpdate {
-    if !residual.is_finite() || !measurement_variance.is_finite() || measurement_variance < 0.0 {
+    if !residual.is_finite() {
         return TrackUpdate::Invalid;
     }
-    let innovation_variance =
-        (jacobian.transpose() * filter.covariance * jacobian)[0] + measurement_variance;
-    if !innovation_variance.is_finite() || innovation_variance <= 1.0e-15 {
+    let Some(variance) = innovation_variance(filter, jacobian, measurement_variance) else {
         return TrackUpdate::Invalid;
-    }
-    if residual.abs() / innovation_variance.sqrt() > gate_sigma {
+    };
+    if residual.abs() / variance.sqrt() > gate_sigma {
         return TrackUpdate::Rejected;
     }
-    let gain = filter.covariance * jacobian / innovation_variance;
+    let gain = filter.covariance * jacobian / variance;
     let state = filter.state + gain * residual;
     let left = TrackCovariance::identity() - gain * jacobian.transpose();
     let covariance = left * filter.covariance * left.transpose()
         + gain * measurement_variance * gain.transpose();
+    commit_update(filter, state, covariance)
+}
+
+fn commit_update(
+    filter: &mut Filter,
+    state: TrackState,
+    covariance: TrackCovariance,
+) -> TrackUpdate {
     let covariance = 0.5 * (covariance + covariance.transpose());
     if !state.iter().all(|value| value.is_finite())
         || !covariance.iter().all(|value| value.is_finite())
@@ -507,9 +787,9 @@ fn apply_track_scalar(
     TrackUpdate::Applied
 }
 
-fn to_track(filter: &Filter, track_key: &str, available_time_ns: i64) -> ObjectTrack {
+fn to_track(filter: &Filter, track_id: &str, available_time_ns: i64) -> ObjectTrack {
     ObjectTrack {
-        track_key: track_key.to_owned(),
+        track_id: track_id.to_owned(),
         estimate_time_ns: filter.time_ns,
         available_time_ns,
         position_world_m: Some(Vec2 {
@@ -530,36 +810,33 @@ fn to_track(filter: &Filter, track_key: &str, available_time_ns: i64) -> ObjectT
 mod tests {
     use super::*;
 
-    fn detection() -> LidarDetection {
+    fn detection(range_m: f64, bearing_rad: f64, time_ns: i64) -> LidarDetection {
         LidarDetection {
-            track_key: "a".to_owned(),
-            measurement_time_ns: 0,
-            range_m: 20.0,
-            bearing_rad: 0.0,
+            measurement_time_ns: time_ns,
+            range_m,
+            bearing_rad,
             range_variance_m2: 0.01,
             bearing_variance_rad2: 0.0001,
         }
     }
 
+    fn ego() -> EgoPose {
+        EgoPose {
+            time_ns: 0,
+            position: Vector2::zeros(),
+            yaw: 0.0,
+            covariance_xy_yaw: SMatrix::zeros(),
+        }
+    }
+
     #[test]
     fn ego_heading_error_moves_a_distant_object_sideways() {
-        let correct = initialize(
-            &detection(),
-            EgoPose {
-                time_ns: 0,
-                position: Vector2::zeros(),
-                yaw: 0.0,
-                covariance_xy_yaw: SMatrix::zeros(),
-            },
-            0,
-        );
+        let correct = initialize(&detection(20.0, 0.0, 0), ego(), 0);
         let wrong = initialize(
-            &detection(),
+            &detection(20.0, 0.0, 0),
             EgoPose {
-                time_ns: 0,
-                position: Vector2::zeros(),
                 yaw: 1_f64.to_radians(),
-                covariance_xy_yaw: SMatrix::zeros(),
+                ..ego()
             },
             0,
         );
@@ -567,18 +844,12 @@ mod tests {
     }
 
     #[test]
-    fn lidar_update_is_atomic_when_bearing_is_rejected() {
-        let ego = EgoPose {
-            time_ns: 0,
-            position: Vector2::zeros(),
-            yaw: 0.0,
-            covariance_xy_yaw: SMatrix::zeros(),
-        };
-        let mut filter = initialize(&detection(), ego, 0);
+    fn lidar_update_is_atomic_when_rejected() {
+        let ego = ego();
+        let mut filter = initialize(&detection(20.0, 0.0, 0), ego, 0);
         let original_state = filter.state;
         let original_covariance = filter.covariance;
-        let mut outlier = detection();
-        outlier.bearing_rad = std::f64::consts::FRAC_PI_2;
+        let outlier = detection(20.0, std::f64::consts::FRAC_PI_2, 0);
 
         assert_eq!(
             update_lidar(&mut filter, &outlier, ego, 3.0),
@@ -586,5 +857,98 @@ mod tests {
         );
         assert_eq!(filter.state, original_state);
         assert_eq!(filter.covariance, original_covariance);
+    }
+
+    #[test]
+    fn association_follows_position_instead_of_detection_order() -> Result<()> {
+        let time = |time_ns| MeasurementTime {
+            measurement_time_ns: time_ns,
+            arrival_time_ns: time_ns,
+        };
+        let measurements = vec![
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(0)),
+                detections: vec![detection(5.0, 0.0, 0), detection(10.0, 0.0, 0)],
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(1_000_000_000)),
+                detections: vec![
+                    detection(10.1, 0.0, 1_000_000_000),
+                    detection(5.1, 0.0, 1_000_000_000),
+                ],
+            }),
+        ];
+        let history = EgoHistory {
+            samples: vec![
+                ego(),
+                EgoPose {
+                    time_ns: 1_000_000_000,
+                    ..ego()
+                },
+            ],
+        };
+        let result = run(&ObjectTrackerConfig::default(), &measurements, &history)?;
+        let first = result
+            .tracks
+            .iter()
+            .find(|track| track.track_id == "track-001")
+            .unwrap();
+        let second = result
+            .tracks
+            .iter()
+            .find(|track| track.track_id == "track-002")
+            .unwrap();
+        assert!(first.position_world_m.as_ref().unwrap().x < 7.0);
+        assert!(second.position_world_m.as_ref().unwrap().x > 8.0);
+        assert_eq!(result.diagnostics.created_tracks, 2);
+        assert_eq!(result.diagnostics.confirmed_tracks, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn track_is_deleted_after_configured_unmatched_lidar_scans() -> Result<()> {
+        let time = |time_ns| MeasurementTime {
+            measurement_time_ns: time_ns,
+            arrival_time_ns: time_ns,
+        };
+        let measurements = vec![
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(0)),
+                detections: vec![detection(5.0, 0.0, 0)],
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(1_000_000_000)),
+                detections: Vec::new(),
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(2_000_000_000)),
+                detections: Vec::new(),
+            }),
+        ];
+        let history = EgoHistory {
+            samples: vec![
+                ego(),
+                EgoPose {
+                    time_ns: 2_000_000_000,
+                    ..ego()
+                },
+            ],
+        };
+        let config = ObjectTrackerConfig {
+            confirmation_hits: 1,
+            max_missed_lidar_scans: 2,
+            ..ObjectTrackerConfig::default()
+        };
+        let result = run(&config, &measurements, &history)?;
+        assert_eq!(result.diagnostics.created_tracks, 1);
+        assert_eq!(result.diagnostics.confirmed_tracks, 1);
+        assert_eq!(result.diagnostics.deleted_tracks, 1);
+        assert!(
+            result
+                .tracks
+                .iter()
+                .all(|track| track.estimate_time_ns < 2_000_000_000)
+        );
+        Ok(())
     }
 }

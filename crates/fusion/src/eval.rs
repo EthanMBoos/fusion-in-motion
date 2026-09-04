@@ -29,7 +29,7 @@ pub struct TrackMetrics {
     pub ego_source: String,
     pub track_samples: usize,
     pub matched_samples: usize,
-    pub object_count: usize,
+    pub track_count: usize,
     pub position_rmse_m: f64,
     pub velocity_rmse_mps: f64,
     pub relative_position_rmse_m: f64,
@@ -75,7 +75,7 @@ pub fn evaluate(
         "truth",
     );
     RunMetrics {
-        metric_version: "fusion-eval-1.0".to_owned(),
+        metric_version: "fusion-eval-2.0".to_owned(),
         estimated_ego_position_rmse_delta_m: tracks_with_estimated_ego.position_rmse_m
             - tracks_with_truth_ego.position_rmse_m,
         ego,
@@ -209,10 +209,18 @@ pub fn evaluate_tracks(
     let mut maximum_error: f64 = 0.0;
     let mut threshold_exceeded = 0;
     let mut objects = BTreeMap::<String, (i64, i64, f64)>::new();
+    let truth_assignments = track_truth_assignments(
+        tracks,
+        object_truth,
+        scenario.metrics.max_truth_match_gap_ns,
+    );
     for track in tracks {
+        let Some(truth_key) = truth_assignments.get(&track.track_id) else {
+            continue;
+        };
         let Some(truth) = nearest_object_truth(
             object_truth,
-            &track.track_key,
+            truth_key,
             track.estimate_time_ns,
             scenario.metrics.max_truth_match_gap_ns,
         ) else {
@@ -235,7 +243,7 @@ pub fn evaluate_tracks(
             usize::from(position_error > scenario.metrics.track_divergence_position_error_m);
         matched += 1;
         objects
-            .entry(track.track_key.clone())
+            .entry(track.track_id.clone())
             .and_modify(|range| {
                 if track.estimate_time_ns >= range.1 {
                     range.1 = track.estimate_time_ns;
@@ -285,7 +293,7 @@ pub fn evaluate_tracks(
         ego_source: ego_source.to_owned(),
         track_samples: tracks.len(),
         matched_samples: matched,
-        object_count: objects.len(),
+        track_count: objects.len(),
         position_rmse_m: rms(position_squared, matched),
         velocity_rmse_mps: rms(velocity_squared, matched),
         relative_position_rmse_m: rms(relative_squared, relative_matched),
@@ -294,6 +302,78 @@ pub fn evaluate_tracks(
         time_coverage_fraction,
         position_threshold_exceeded_count: threshold_exceeded,
     }
+}
+
+pub(crate) fn track_truth_assignments(
+    tracks: &[ObjectTrack],
+    truth: &[ObjectTruthState],
+    max_gap_ns: i64,
+) -> BTreeMap<String, String> {
+    let track_ids = tracks
+        .iter()
+        .map(|track| track.track_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let truth_ids = truth
+        .iter()
+        .map(|state| state.track_key.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if track_ids.is_empty() || truth_ids.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let unmatched_cost = 1.0e12;
+    let invalid_cost = 1.0e18;
+    let mut costs = Vec::with_capacity(track_ids.len());
+    for track_id in &track_ids {
+        let samples = tracks
+            .iter()
+            .filter(|track| &track.track_id == track_id)
+            .collect::<Vec<_>>();
+        let mut row = Vec::with_capacity(truth_ids.len() + track_ids.len());
+        for truth_id in &truth_ids {
+            let mut squared = 0.0;
+            let mut matched = 0;
+            for track in &samples {
+                let (Some(position), Some(state)) = (
+                    track.position_world_m.as_ref(),
+                    nearest_object_truth(truth, truth_id, track.estimate_time_ns, max_gap_ns),
+                ) else {
+                    continue;
+                };
+                let Some(truth_position) = state.position_world_m.as_ref() else {
+                    continue;
+                };
+                squared += (position.x - truth_position.x).powi(2)
+                    + (position.y - truth_position.y).powi(2);
+                matched += 1;
+            }
+            row.push(if matched == 0 {
+                invalid_cost
+            } else {
+                squared / matched as f64
+            });
+        }
+        row.extend(std::iter::repeat_n(unmatched_cost, track_ids.len()));
+        costs.push(row);
+    }
+
+    math::minimum_cost_assignment(&costs)
+        .into_iter()
+        .enumerate()
+        .filter(|(track_index, truth_index)| {
+            *truth_index < truth_ids.len() && costs[*track_index][*truth_index] < unmatched_cost
+        })
+        .map(|(track_index, truth_index)| {
+            (
+                track_ids[track_index].clone(),
+                truth_ids[truth_index].clone(),
+            )
+        })
+        .collect()
 }
 
 fn relative_position_error(

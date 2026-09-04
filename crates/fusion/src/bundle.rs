@@ -240,7 +240,7 @@ pub fn write_reports(
          Position RMSE: {:.3} m  \nHeading RMSE: {:.3} rad  \nGPS updates applied/rejected/invalid: {}/{}/{}\n\n\
          ## Objects\n\n\
          Truth ego position RMSE: {:.3} m  \nEstimated ego position RMSE: {:.3} m  \nCost of estimated ego: {:+.3} m\n\n\
-         Estimated-ego tracker updates applied/rejected/invalid/waiting: {}/{}/{}/{}\n",
+         Estimated-ego associations, camera/lidar: {}/{}  \nUnmatched camera/lidar detections: {}/{}  \nTracks created/confirmed/deleted: {}/{}/{}\n",
         metrics.ego.position_rmse_m,
         metrics.ego.yaw_rmse_rad,
         ego_diagnostics.applied_updates,
@@ -249,10 +249,13 @@ pub fn write_reports(
         metrics.tracks_with_truth_ego.position_rmse_m,
         metrics.tracks_with_estimated_ego.position_rmse_m,
         metrics.estimated_ego_position_rmse_delta_m,
-        tracker_estimated_diagnostics.applied_updates,
-        tracker_estimated_diagnostics.rejected_updates,
-        tracker_estimated_diagnostics.invalid_updates,
-        tracker_estimated_diagnostics.waiting_for_range,
+        tracker_estimated_diagnostics.associated_camera_detections,
+        tracker_estimated_diagnostics.associated_lidar_detections,
+        tracker_estimated_diagnostics.unmatched_camera_detections,
+        tracker_estimated_diagnostics.unmatched_lidar_detections,
+        tracker_estimated_diagnostics.created_tracks,
+        tracker_estimated_diagnostics.confirmed_tracks,
+        tracker_estimated_diagnostics.deleted_tracks,
     );
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())

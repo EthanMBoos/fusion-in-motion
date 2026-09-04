@@ -37,7 +37,6 @@ pub(super) fn generate(
                     continue;
                 }
                 detections.push(CameraDetection {
-                    track_key: object.id.clone(),
                     bearing_rad: wrap_angle(
                         geometry.bearing_rad
                             + config.bearing_noise_stddev_rad
