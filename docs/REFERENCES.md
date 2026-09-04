@@ -86,23 +86,102 @@ physics is held fixed, and its GPU cameras can arrive several frames late. This
 repo models those effects with separate measurement and arrival times and an
 explicit lidar scan time.
 
-## External algorithms and perception
+## External data and algorithms
 
-External Python and C++ tools read a saved measurement bundle and write data
-that the normal scorer and dashboard can consume:
+There are three separate paths: replace an estimator or tracker, replay
+recorded detections, or turn raw sensor data into detections. The first has
+basic support today.
+
+### Replace an estimator or tracker
+
+An external Python or C++ algorithm can read a generated measurement bundle and
+return final estimates:
 
 ```text
-measurements.mcap -> Python or C++ algorithm -> estimates or detections
-                                             -> Rust scoring and display
+measurements.mcap -> external algorithm -> estimate or track CSV -> fusion score
 ```
 
-Truth stays out of the algorithm, each implementation receives the same input,
-and Rust does not need bindings for every research library. The current CSV
-support covers algorithm output. Add a self-contained Python example that
-decodes `measurements.mcap`, runs a basic GPS/IMU estimator, and writes that
-CSV. The
+Truth stays in `truth.mcap` and out of the algorithm. `fusion score ego` and
+`fusion score tracks` write the submitted result into the run and produce
+metrics. The dashboard does not discover external results yet.
+
+Add a small Python example that decodes `measurements.mcap`, runs a basic
+GPS/IMU estimator, and writes the supported CSV. The
 [MCAP Python Protobuf reader](https://mcap.dev/docs/python/mcap-protobuf-apidoc/mcap_protobuf.reader)
-provides the required file interface.
+provides the file interface.
+
+### Replay recorded detections
+
+The object tracker should also accept detections produced outside this
+simulator:
+
+```text
+ROS bag, MCAP, or dataset
+        -> format adapter
+        -> CameraFrame and LidarScan measurements
+        -> Rust object tracker
+        -> tracks, metrics, and dashboard
+```
+
+An MCAP file is only a container. A ROS recording or dataset will use different
+topics, message schemas, coordinate frames, and timestamps from
+`fusion.proto`. An adapter must translate those details into this API.
+
+For the current planar tracker, a camera detection contains bearing and bearing
+uncertainty. A lidar detection contains range, bearing, and both uncertainties.
+The adapter applies sensor calibration, converts observations into the vehicle
+frame, keeps measurement and arrival time, and does not attach object names. If
+a recording has no useful arrival timestamp, set arrival time equal to
+measurement time unless latency is part of the test.
+
+Tracking also needs the vehicle state. It can come from GPS and IMU measurements
+in the same recording or from an imported external vehicle estimate. Reference
+vehicle and object states belong in a separate truth file used only for scoring
+and display.
+
+The current CLI cannot import a detection recording or rerun the Rust tracker
+from one. The first replay integration should use a small MCAP containing
+already-computed camera and lidar detections. This tests the adapter, timing,
+tracking, scoring, and dashboard before raw perception is added.
+
+### Raw camera and lidar frontends
+
+Raw images and point clouds add a perception step before the same replay path:
+
+```text
+camera frames -> detector -> bearing observations
+lidar points  -> detector -> range and bearing observations
+observations + vehicle state -> Rust object tracker
+```
+
+[OpenCV](https://docs.opencv.org/4.x/d6/d0f/group__dnn.html) can handle image
+input, calibration, pixel geometry, and model inference.
+[TorchVision](https://docs.pytorch.org/tutorials/intermediate/torchvision_tutorial.html)
+provides reference object-detection models and training examples, and
+[ONNX Runtime](https://onnxruntime.ai/inference) provides a lighter
+model-independent inference option. The simulator API is detector-independent.
+
+The frontend owns decoding, calibration, and model inference. Camera
+calibration turns an image detection into a direction; it does not supply object
+distance. Detector confidence is not covariance and should not be copied into
+the measurement-uncertainty field.
+
+Detections are unlabeled. Truth IDs remain in the truth recording and evaluator;
+the tracker creates its own IDs.
+
+Keep two output choices. A perception frontend emits observations for the Rust
+tracker. A complete external tracker emits track CSV for `fusion score tracks`.
+Build the observation path first because it keeps association and track life
+cycle inside this repo.
+
+Implementation order:
+
+1. Add the small Python MCAP reader and external GPS/IMU estimator example.
+2. Import a small recorded-detection MCAP and run the Rust tracker on it.
+3. Add adapters for selected ROS or dataset recordings.
+4. Add a camera detector, keeping both frame time and result-arrival time.
+5. Add a lidar point-cloud frontend when raw lidar becomes a lesson.
+6. Add GTSAM for the 3D GPS/IMU smoother comparison.
 
 ### GTSAM
 
@@ -125,47 +204,6 @@ entire trajectory.
 Start with the Python bindings and export the existing score format. A planar
 version would need [custom factors](https://borglab.github.io/gtsam/customfactor/)
 and is not part of the starter.
-
-### Python camera and lidar frontends
-
-Use Python to turn real images and point clouds into sensor observations:
-
-```text
-images or camera recording -> Python detector -> camera detections
-lidar recording            -> Python frontend -> lidar detections
-camera/lidar detections + GPS/IMU vehicle estimate -> Rust object tracker
-```
-
-[OpenCV](https://docs.opencv.org/4.x/d6/d0f/group__dnn.html) can handle image
-input, calibration, pixel geometry, and model inference.
-[TorchVision](https://docs.pytorch.org/tutorials/intermediate/torchvision_tutorial.html)
-provides reference object-detection models and training examples, and
-[ONNX Runtime](https://onnxruntime.ai/inference) provides a lighter
-model-independent inference option. The simulator API is detector-independent.
-
-The first camera adapter reads recorded frames and writes detections. Each
-detection needs measurement and arrival time, sensor frame, a per-frame
-detection ID, image coordinates or a bounding box, class, confidence, and any
-calibrated measurement uncertainty. Camera calibration turns image position
-into direction; it does not supply object distance. Detector confidence is
-also not covariance and should not be converted directly into measurement
-noise.
-
-Detections are unlabeled. Truth IDs remain in the truth recording and evaluator;
-the tracker creates its own IDs.
-
-Support two external perception modes. A detector frontend emits unassociated
-observations for the Rust tracker. An external tracker emits complete tracks
-for scoring. Build the detector path first because it preserves the association
-and tracking lessons.
-
-Implementation order:
-
-1. Add the small Python MCAP reader and external GPS/IMU estimator example.
-2. Replay recorded camera detections through the Rust tracker.
-3. Add a Python image detector, keeping both frame time and result-arrival time.
-4. Add GTSAM for the 3D GPS/IMU smoother comparison.
-5. Add a lidar point-cloud frontend when raw lidar becomes a lesson.
 
 ## What public benchmarks actually measure
 

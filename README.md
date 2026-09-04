@@ -1,20 +1,25 @@
 # Fusion in Motion
 
-This repo simulates two connected problems:
+Fusion in Motion is a simulator for testing sensor fusion and object tracking.
+It models two connected systems:
 
 ```text
-GPS + IMU -> estimate the vehicle
-camera + lidar + vehicle estimate -> track other objects
+GPS + IMU -> vehicle state
+camera + lidar + vehicle state -> object tracks
 ```
 
-Camera and lidar do not correct the vehicle estimate. They detect objects. The
-object tracker needs the vehicle estimate to tell vehicle motion from object
-motion.
+GPS and IMU measurements feed the vehicle estimator. Camera and lidar
+detections feed the object tracker, which also uses the estimated vehicle state.
 
-The simulator is planar. GPS reports vehicle position, the IMU reports forward
-acceleration and rotation, the camera reports direction to an object, and lidar
-reports direction and distance. Measurements are analytic rather than rendered
-images or point clouds.
+A scenario defines vehicle and object motion over time. The simulator calculates
+what each sensor would report, then adds configured noise, bias, missed
+detections, and delay. It produces measurements, not camera images or lidar
+point clouds.
+
+The current simulator is planar. Vehicle motion follows acceleration and turn
+rate segments, while objects move at configured velocities. GPS reports vehicle
+position, the IMU reports forward acceleration and rotation, the camera reports
+direction to an object, and lidar reports direction and distance.
 
 ## Run it
 
