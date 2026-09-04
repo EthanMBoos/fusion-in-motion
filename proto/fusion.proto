@@ -113,18 +113,24 @@ message TruthState {
   double path_distance_m = 7;
 }
 
+message ImuEffectsTruth {
+  Vec3 gyro_bias_body_radps = 1;
+  Vec3 accel_bias_body_mps2 = 2;
+}
+
 message ObservationTruth {
   string visible_record_id = 1;
   sint64 acquisition_start_truth_ns = 2;
   sint64 acquisition_end_truth_ns = 3;
   sint64 publish_truth_ns = 4;
   sint64 arrival_truth_ns = 5;
-  string effect_values_json = 6;
+  reserved 6;
   oneof ideal_observation {
     ImuSample ideal_imu = 10;
     CameraFrame ideal_camera = 11;
     LidarScan ideal_lidar = 12;
   }
+  ImuEffectsTruth imu_effects = 13;
 }
 
 message StateEstimate {
@@ -138,4 +144,6 @@ message StateEstimate {
   // Row-major covariance for [x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x].
   repeated double covariance = 8;
   uint64 revision = 9;
+  optional double gyro_bias_z_radps = 10;
+  optional double accel_bias_x_mps2 = 11;
 }

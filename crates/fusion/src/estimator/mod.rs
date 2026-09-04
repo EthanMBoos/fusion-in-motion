@@ -525,6 +525,8 @@ impl BaselineEkf {
                 })
                 .collect(),
             revision: 0,
+            gyro_bias_z_radps: Some(self.state.gyro_bias_radps),
+            accel_bias_x_mps2: Some(self.state.accel_bias_mps2),
         }
     }
 }

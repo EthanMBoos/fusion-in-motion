@@ -82,6 +82,14 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     let metrics: fusion_in_motion::eval::Metrics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/metrics.json"))?)?;
     assert!(metrics.covariance_consistency.is_some());
+    let bias = metrics
+        .bias_evaluation
+        .as_ref()
+        .expect("baseline run should evaluate IMU biases");
+    assert_eq!(bias.matched_samples, bias.estimate_samples);
+    assert!(bias.gyro_bias_z_rmse_radps.is_some());
+    assert!(bias.accel_bias_x_rmse_mps2.is_some());
+    assert!(bias.covariance_consistency.is_some());
     let timing: estimator::TimingDiagnostics =
         serde_json::from_slice(&fs::read(output.join("reports/baseline/timing.json"))?)?;
     assert!(timing.timing_compensation);
@@ -172,7 +180,17 @@ fn complete_run_writes_replayable_bundle() -> Result<()> {
     );
     let truth = bundle::read_truth_states(&output.join("truth.mcap"))?;
     assert!(!truth.is_empty());
-    assert!(!bundle::read_estimates(&output.join("estimates/baseline.mcap"))?.is_empty());
+    let observation_truth = bundle::read_observation_truth(&output.join("truth.mcap"))?;
+    assert!(
+        observation_truth
+            .iter()
+            .any(|observation| observation.imu_effects.is_some())
+    );
+    let estimates = bundle::read_estimates(&output.join("estimates/baseline.mcap"))?;
+    assert!(!estimates.is_empty());
+    assert!(estimates.iter().all(|estimate| {
+        estimate.gyro_bias_z_radps.is_some() && estimate.accel_bias_x_mps2.is_some()
+    }));
 
     let external_csv = temp.path().join("perfect.csv");
     let mut csv = String::from("estimate_time_ns,x_m,y_m,yaw_rad\n");
@@ -226,11 +244,19 @@ fn timing_compensation_recovers_delayed_and_scanned_measurements() -> Result<()>
         &scenario.imu,
         &generated.measurements,
     )?;
-    let uncompensated_metrics = eval::evaluate(&generated.truth_states, &uncompensated.estimates)?;
+    let uncompensated_metrics = eval::evaluate(
+        &generated.truth_states,
+        &generated.observation_truth,
+        &uncompensated.estimates,
+    )?;
 
     let compensated =
         estimator::run_baseline(&scenario.estimator, &scenario.imu, &generated.measurements)?;
-    let compensated_metrics = eval::evaluate(&generated.truth_states, &compensated.estimates)?;
+    let compensated_metrics = eval::evaluate(
+        &generated.truth_states,
+        &generated.observation_truth,
+        &compensated.estimates,
+    )?;
 
     assert!(uncompensated.timing.delayed_measurements > 0);
     assert_eq!(uncompensated.timing.replayed_measurements, 0);

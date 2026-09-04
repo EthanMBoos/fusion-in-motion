@@ -48,6 +48,12 @@ pub fn read_estimates_csv(
         let yaw_rad = parse_required::<f64>(&columns, &fields, "yaw_rad")?;
         let vx_mps = parse_optional::<f64>(&columns, &fields, "vx_mps")?.unwrap_or(0.0);
         let vy_mps = parse_optional::<f64>(&columns, &fields, "vy_mps")?.unwrap_or(0.0);
+        let gyro_bias_z_radps = parse_optional::<f64>(&columns, &fields, "gyro_bias_z_radps")?;
+        let accel_bias_x_mps2 = parse_optional::<f64>(&columns, &fields, "accel_bias_x_mps2")?;
+        ensure!(
+            gyro_bias_z_radps.is_some() == accel_bias_x_mps2.is_some(),
+            "estimate CSV line {line_number}: gyro_bias_z_radps and accel_bias_x_mps2 must be provided together"
+        );
         for (name, value) in [
             ("x_m", x_m),
             ("y_m", y_m),
@@ -57,6 +63,15 @@ pub fn read_estimates_csv(
         ] {
             ensure!(
                 value.is_finite(),
+                "estimate CSV line {line_number}: {name} is not finite"
+            );
+        }
+        for (name, value) in [
+            ("gyro_bias_z_radps", gyro_bias_z_radps),
+            ("accel_bias_x_mps2", accel_bias_x_mps2),
+        ] {
+            ensure!(
+                value.is_none_or(f64::is_finite),
                 "estimate CSV line {line_number}: {name} is not finite"
             );
         }
@@ -82,6 +97,8 @@ pub fn read_estimates_csv(
             covariance_kind: CovarianceKind::Unknown as i32,
             covariance: Vec::new(),
             revision: 0,
+            gyro_bias_z_radps,
+            accel_bias_x_mps2,
         });
     }
     ensure!(!estimates.is_empty(), "estimate CSV contains no data rows");
@@ -154,5 +171,19 @@ mod tests {
         assert_eq!(estimates.len(), 2);
         assert_eq!(estimates[0].estimator_id, "mine");
         assert_eq!(estimates[0].emission_time_ns, 100);
+    }
+
+    #[test]
+    fn reads_optional_planar_biases() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("estimate.csv");
+        fs::write(
+            &path,
+            "estimate_time_ns,x_m,y_m,yaw_rad,gyro_bias_z_radps,accel_bias_x_mps2\n100,1.0,2.0,0.1,0.003,0.025\n",
+        )
+        .unwrap();
+        let estimates = read_estimates_csv(&path, "mine", "world", "body").unwrap();
+        assert_eq!(estimates[0].gyro_bias_z_radps, Some(0.003));
+        assert_eq!(estimates[0].accel_bias_x_mps2, Some(0.025));
     }
 }

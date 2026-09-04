@@ -159,8 +159,9 @@ The evaluator reads these fields from each `StateEstimate`:
 | `estimate_time_ns` | Truth is interpolated at this time. Times outside the truth interval are not scored. |
 | `emission_time_ns` | Time to first valid output. |
 | `pose_w_b`, `velocity_world_mps` | Position and yaw RMSE, final error, maximum error, and final drift. |
+| `gyro_bias_z_radps`, `accel_bias_x_mps2` | Bias RMSE and final bias error when both fields are present. |
 | `status` | Counted as reported. Only `VALID` outputs are scored. |
-| `covariance_kind`, `covariance` | A full covariance enables ANEES and marginal 95% coverage for x, y, yaw, and forward speed. |
+| `covariance_kind`, `covariance` | A full covariance enables separate motion-state and bias-state ANEES and marginal 95% coverage. |
 
 Valid-output fraction is `VALID` outputs divided by all estimator outputs. It
 does not assume an output rate. If nothing can be scored, error fields are
@@ -183,9 +184,13 @@ labels groups with one successful run as `n=1`.
 The covariance is row-major for
 `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`. Consistency errors use
 additive world-frame x/y, wrapped world-from-body yaw, and signed body-forward
-speed. Bias blocks are validated but not scored. The dashboard's position
-uncertainty line is the outer radius of the 2D 95% covariance ellipse, not a
-marginal x or y bound.
+speed for motion, with gyro-z and accelerometer-x evaluated separately. The
+dashboard's position uncertainty line is the outer radius of the 2D 95%
+covariance ellipse, not a marginal x or y bound.
+
+Bias truth is matched at the exact IMU reported timestamp. Bias metrics are
+aggregated across seeds in sweep reports. See the [IMU bias
+experiment](BIAS_EXPERIMENT.md).
 
 The values describe this analytic experiment. They are not claims about the
 performance of physical sensors.

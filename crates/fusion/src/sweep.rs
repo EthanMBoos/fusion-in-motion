@@ -63,6 +63,11 @@ pub struct SweepGroup {
     pub y_coverage_95_fraction: Option<SweepStatistic>,
     pub yaw_coverage_95_fraction: Option<SweepStatistic>,
     pub forward_speed_coverage_95_fraction: Option<SweepStatistic>,
+    pub gyro_bias_z_rmse_radps: Option<SweepStatistic>,
+    pub accel_bias_x_rmse_mps2: Option<SweepStatistic>,
+    pub normalized_bias_anees: Option<SweepStatistic>,
+    pub gyro_bias_z_coverage_95_fraction: Option<SweepStatistic>,
+    pub accel_bias_x_coverage_95_fraction: Option<SweepStatistic>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -328,6 +333,39 @@ fn aggregate(results: &[SweepCaseResult]) -> Vec<SweepGroup> {
                         .as_ref()
                         .map(|consistency| consistency.marginal_coverage_95.forward_speed_fraction)
                 }),
+                gyro_bias_z_rmse_radps: optional_statistic(|metrics| {
+                    metrics
+                        .bias_evaluation
+                        .as_ref()
+                        .and_then(|bias| bias.gyro_bias_z_rmse_radps)
+                }),
+                accel_bias_x_rmse_mps2: optional_statistic(|metrics| {
+                    metrics
+                        .bias_evaluation
+                        .as_ref()
+                        .and_then(|bias| bias.accel_bias_x_rmse_mps2)
+                }),
+                normalized_bias_anees: optional_statistic(|metrics| {
+                    metrics
+                        .bias_evaluation
+                        .as_ref()
+                        .and_then(|bias| bias.covariance_consistency.as_ref())
+                        .map(|consistency| consistency.normalized_anees)
+                }),
+                gyro_bias_z_coverage_95_fraction: optional_statistic(|metrics| {
+                    metrics
+                        .bias_evaluation
+                        .as_ref()
+                        .and_then(|bias| bias.covariance_consistency.as_ref())
+                        .map(|consistency| consistency.marginal_coverage_95.gyro_z_fraction)
+                }),
+                accel_bias_x_coverage_95_fraction: optional_statistic(|metrics| {
+                    metrics
+                        .bias_evaluation
+                        .as_ref()
+                        .and_then(|bias| bias.covariance_consistency.as_ref())
+                        .map(|consistency| consistency.marginal_coverage_95.accel_x_fraction)
+                }),
             }
         })
         .collect()
@@ -361,12 +399,12 @@ fn write_reports(output: &Path, report: &SweepReport) -> Result<()> {
     )?;
 
     let mut csv = String::from(
-        "case_id,status,root_seed,parameters,position_rmse_m,yaw_rmse_rad,final_position_error_m,valid_output_fraction,valid_output_count,initializing_output_count,diverged_output_count,unspecified_output_count,unknown_status_output_count,unmatched_valid_output_count,anees,normalized_anees,x_coverage_95_fraction,y_coverage_95_fraction,yaw_coverage_95_fraction,forward_speed_coverage_95_fraction,error\n",
+        "case_id,status,root_seed,parameters,position_rmse_m,yaw_rmse_rad,final_position_error_m,valid_output_fraction,valid_output_count,initializing_output_count,diverged_output_count,unspecified_output_count,unknown_status_output_count,unmatched_valid_output_count,anees,normalized_anees,x_coverage_95_fraction,y_coverage_95_fraction,yaw_coverage_95_fraction,forward_speed_coverage_95_fraction,gyro_bias_z_rmse_radps,accel_bias_x_rmse_mps2,normalized_bias_anees,gyro_bias_z_coverage_95_fraction,accel_bias_x_coverage_95_fraction,error\n",
     );
     for case in &report.cases {
         let metrics = case.metrics.as_ref();
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_field(&case.case_id),
             csv_field(&case.status),
             case.root_seed,
@@ -411,6 +449,34 @@ fn write_reports(output: &Path, report: &SweepReport) -> Result<()> {
                     .as_ref()
                     .map(|consistency| consistency.marginal_coverage_95.forward_speed_fraction)
             })),
+            optional_number(metrics.and_then(|m| {
+                m.bias_evaluation
+                    .as_ref()
+                    .and_then(|bias| bias.gyro_bias_z_rmse_radps)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.bias_evaluation
+                    .as_ref()
+                    .and_then(|bias| bias.accel_bias_x_rmse_mps2)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.bias_evaluation
+                    .as_ref()
+                    .and_then(|bias| bias.covariance_consistency.as_ref())
+                    .map(|consistency| consistency.normalized_anees)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.bias_evaluation
+                    .as_ref()
+                    .and_then(|bias| bias.covariance_consistency.as_ref())
+                    .map(|consistency| consistency.marginal_coverage_95.gyro_z_fraction)
+            })),
+            optional_number(metrics.and_then(|m| {
+                m.bias_evaluation
+                    .as_ref()
+                    .and_then(|bias| bias.covariance_consistency.as_ref())
+                    .map(|consistency| consistency.marginal_coverage_95.accel_x_fraction)
+            })),
             csv_field(case.error.as_deref().unwrap_or("")),
         ));
     }
@@ -437,6 +503,19 @@ fn write_reports(output: &Path, report: &SweepReport) -> Result<()> {
             display_statistic(group.normalized_anees.as_ref(), false),
             display_coverage(group),
             display_statistic(group.valid_output_fraction.as_ref(), true),
+        ));
+    }
+    summary.push_str(
+        "\n## Bias states\n\n| Parameters | Gyro-z RMSE (rad/s) | Accel-x RMSE (m/s²) | Normalized bias ANEES | 95% coverage gyro/accel |\n| --- | ---: | ---: | ---: | --- |\n",
+    );
+    for group in &report.groups {
+        summary.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            markdown_parameters(&group.parameters),
+            display_statistic(group.gyro_bias_z_rmse_radps.as_ref(), false),
+            display_statistic(group.accel_bias_x_rmse_mps2.as_ref(), false),
+            display_statistic(group.normalized_bias_anees.as_ref(), false),
+            display_bias_coverage(group),
         ));
     }
     summary.push_str(
@@ -487,6 +566,15 @@ fn display_coverage(group: &SweepGroup) -> String {
         group.y_coverage_95_fraction.as_ref(),
         group.yaw_coverage_95_fraction.as_ref(),
         group.forward_speed_coverage_95_fraction.as_ref(),
+    ]
+    .map(|statistic| display_statistic(statistic, true))
+    .join(" / ")
+}
+
+fn display_bias_coverage(group: &SweepGroup) -> String {
+    [
+        group.gyro_bias_z_coverage_95_fraction.as_ref(),
+        group.accel_bias_x_coverage_95_fraction.as_ref(),
     ]
     .map(|statistic| display_statistic(statistic, true))
     .join(" / ")

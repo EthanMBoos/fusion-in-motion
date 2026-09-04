@@ -15,6 +15,7 @@ EKF, parameter sweeps, scoring, and Rerun visualization.
 | --- | --- | --- |
 | Current 2D demo | **Runnable** | IMU, camera, timed lidar, dashboard, scoring, and sweeps |
 | 1. Accuracy vs consistency | **Runnable** | Covariance validation, ANEES, marginal coverage, paired-seed sweep output, and uncertainty plots |
+| IMU bias estimation | **Runnable** | Typed bias truth and estimates, bias consistency metrics, multi-seed sweep, and uncertainty plots |
 | 2. Delayed measurements | **Runnable** | Compare arrival-time updates with bounded fixed-lag replay and stale-data discard |
 | 3. Lidar scan timing | **Runnable** | Compare instantaneous scans with estimated-motion deskew using per-return time |
 | 4–7. External estimators through 3D | Planned | The saved-bundle and external CSV scoring boundaries exist |
@@ -70,6 +71,9 @@ working correctly.
 - uncertainty plots reusable by every later demo.
 
 The next demo covers what happens when valid measurements arrive late.
+
+The [IMU bias experiment](BIAS_EXPERIMENT.md) uses the same consistency tools
+for the EKF's gyro-z and accelerometer-x bias states.
 
 ## 2. Delayed measurements need state history
 

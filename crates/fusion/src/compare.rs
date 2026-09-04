@@ -44,6 +44,32 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
         variant_metrics.maximum_position_error_m,
         false,
     );
+    optional_row(
+        &mut out,
+        "gyro bias RMSE (rad/s)",
+        baseline_metrics
+            .bias_evaluation
+            .as_ref()
+            .and_then(|bias| bias.gyro_bias_z_rmse_radps),
+        variant_metrics
+            .bias_evaluation
+            .as_ref()
+            .and_then(|bias| bias.gyro_bias_z_rmse_radps),
+        false,
+    );
+    optional_row(
+        &mut out,
+        "accel bias RMSE (m/s²)",
+        baseline_metrics
+            .bias_evaluation
+            .as_ref()
+            .and_then(|bias| bias.accel_bias_x_rmse_mps2),
+        variant_metrics
+            .bias_evaluation
+            .as_ref()
+            .and_then(|bias| bias.accel_bias_x_rmse_mps2),
+        false,
+    );
     row(
         &mut out,
         "valid outputs (%)",
@@ -90,6 +116,38 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
         ] {
             row(&mut out, name, baseline * 100.0, variant * 100.0, true);
         }
+    }
+    if let (Some(baseline_consistency), Some(variant_consistency)) = (
+        baseline_metrics
+            .bias_evaluation
+            .as_ref()
+            .and_then(|bias| bias.covariance_consistency.as_ref()),
+        variant_metrics
+            .bias_evaluation
+            .as_ref()
+            .and_then(|bias| bias.covariance_consistency.as_ref()),
+    ) {
+        row(
+            &mut out,
+            "normalized bias ANEES",
+            baseline_consistency.normalized_anees,
+            variant_consistency.normalized_anees,
+            false,
+        );
+        row(
+            &mut out,
+            "gyro bias 95% coverage (%)",
+            baseline_consistency.marginal_coverage_95.gyro_z_fraction * 100.0,
+            variant_consistency.marginal_coverage_95.gyro_z_fraction * 100.0,
+            true,
+        );
+        row(
+            &mut out,
+            "accel bias 95% coverage (%)",
+            baseline_consistency.marginal_coverage_95.accel_x_fraction * 100.0,
+            variant_consistency.marginal_coverage_95.accel_x_fraction * 100.0,
+            true,
+        );
     }
     out.push_str(
         "\nPositive error deltas are worse. Positive valid-output deltas are better.\nNormalized ANEES should be judged against 1.0 and marginal coverage against 95%, not by delta direction alone.\n",

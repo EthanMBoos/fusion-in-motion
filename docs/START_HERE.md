@@ -206,3 +206,6 @@ fusion sweep examples/beginner_sweep.yaml --output runs/beginner-sweep
 Read `runs/beginner-sweep/reports/summary.md`. See
 [Experiments](EXPERIMENTS.md) for trajectory changes, sensor noise, missed
 detections, estimator assumptions, and larger sweeps.
+
+Continue with the [IMU bias experiment](BIAS_EXPERIMENT.md) to inspect the two
+bias states and their uncertainty across independent runs.

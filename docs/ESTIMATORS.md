@@ -22,13 +22,14 @@ estimate_time_ns,x_m,y_m,yaw_rad
 Optional columns:
 
 ```text
-emission_time_ns,vx_mps,vy_mps,status
+emission_time_ns,vx_mps,vy_mps,status,gyro_bias_z_radps,accel_bias_x_mps2
 ```
 
 `status` may be `VALID`, `INITIALIZING`, or `DIVERGED` and defaults to `VALID`.
 `emission_time_ns` defaults to `estimate_time_ns`, and velocity defaults to
 zero. Times must be strictly increasing. The file uses simple unquoted numeric
 fields rather than a general CSV dialect.
+The two bias columns must appear together when supplied.
 
 Example:
 
@@ -60,4 +61,5 @@ The CSV format does not carry covariance. CSV estimates therefore receive
 accuracy metrics but no ANEES, confidence coverage, or uncertainty-bound plots.
 The MCAP `StateEstimate` schema carries a row-major 6×6 covariance for
 `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]` when
-`covariance_kind` is `FULL`.
+`covariance_kind` is `FULL`. Optional typed fields carry the two corresponding
+bias estimates.

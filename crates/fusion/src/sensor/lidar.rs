@@ -108,7 +108,6 @@ pub(super) fn generate(
                     scan_end_ns - config.scan_duration_ns,
                     scan_end_ns,
                     arrival_ns,
-                    serde_json::json!({"ideal_count": ideal_observation.returns.len()}),
                     observation_truth::IdealObservation::IdealLidar(ideal_observation),
                 )),
             });

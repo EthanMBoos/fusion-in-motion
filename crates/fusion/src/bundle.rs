@@ -289,6 +289,23 @@ pub fn read_truth_states(path: &Path) -> Result<Vec<TruthState>> {
     Ok(states)
 }
 
+pub fn read_observation_truth(path: &Path) -> Result<Vec<ObservationTruth>> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut observations = Vec::new();
+    for item in mcap::MessageStream::new(&bytes)? {
+        let message = item?;
+        let schema_name = message
+            .channel
+            .schema
+            .as_ref()
+            .map(|schema| schema.name.as_str());
+        if schema_name == Some("fusion.ObservationTruth") {
+            observations.push(ObservationTruth::decode(message.data.as_ref())?);
+        }
+    }
+    Ok(observations)
+}
+
 pub fn read_estimates(path: &Path) -> Result<Vec<StateEstimate>> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut estimates = Vec::new();
@@ -422,6 +439,8 @@ pub fn write_reports(
     ));
     summary.push_str("## Covariance consistency\n\n");
     summary.push_str(&consistency_markdown(metrics));
+    summary.push_str("\n## Bias states\n\n");
+    summary.push_str(&bias_markdown(metrics));
     summary.push_str(
         "\nANEES from one time-correlated trajectory is a diagnostic. Use paired seeds before drawing a statistical conclusion.\n\n",
     );
@@ -477,6 +496,8 @@ pub fn write_named_reports(output: &Path, name: &str, metrics: &Metrics) -> Resu
         display_optional(metrics.last_valid_estimate_time_s, 6),
     );
     summary.push_str(&consistency_markdown(metrics));
+    summary.push_str("\n## Bias states\n\n");
+    summary.push_str(&bias_markdown(metrics));
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
 }
@@ -502,8 +523,7 @@ fn consistency_markdown(metrics: &Metrics) -> String {
          - Normalized ANEES: {:.3} (expected mean 1.000)\n\
          - Marginal 95% coverage: x {:.1}%, y {:.1}%, yaw {:.1}%, forward speed {:.1}%\n\
          - Covariance order: `[x, y, yaw, forward_speed, gyro_bias_z, accel_bias_x]`, row-major\n\
-         - Error coordinates: additive world-frame x/y, wrapped world-from-body yaw, signed body-forward speed\n\
-         - Bias covariance is validated but bias consistency is not scored.\n",
+         - Error coordinates: additive world-frame x/y, wrapped world-from-body yaw, signed body-forward speed\n",
         metrics.full_covariance_samples,
         metrics.missing_covariance_samples,
         consistency.degrees_of_freedom,
@@ -514,6 +534,41 @@ fn consistency_markdown(metrics: &Metrics) -> String {
         coverage.yaw_fraction * 100.0,
         coverage.forward_speed_fraction * 100.0,
     )
+}
+
+fn bias_markdown(metrics: &Metrics) -> String {
+    let Some(bias) = metrics.bias_evaluation.as_ref() else {
+        return "- Bias truth: unavailable\n".to_owned();
+    };
+    let mut output = format!(
+        "- Alignment: {}\n\
+         - Matched bias estimates: {} / {}\n\
+         - Gyro-z bias RMSE: {} rad/s\n\
+         - Accelerometer-x bias RMSE: {} m/s²\n\
+         - Final gyro-z bias error: {} rad/s\n\
+         - Final accelerometer-x bias error: {} m/s²\n",
+        bias.alignment,
+        bias.matched_samples,
+        bias.estimate_samples,
+        display_optional(bias.gyro_bias_z_rmse_radps, 6),
+        display_optional(bias.accel_bias_x_rmse_mps2, 6),
+        display_optional(bias.final_gyro_bias_z_error_radps, 6),
+        display_optional(bias.final_accel_bias_x_error_mps2, 6),
+    );
+    if let Some(consistency) = bias.covariance_consistency.as_ref() {
+        output.push_str(&format!(
+            "- Bias ANEES (2 DoF): {:.3}\n\
+             - Normalized bias ANEES: {:.3} (expected mean 1.000)\n\
+             - Bias marginal 95% coverage: gyro z {:.1}%, accelerometer x {:.1}%\n",
+            consistency.anees,
+            consistency.normalized_anees,
+            consistency.marginal_coverage_95.gyro_z_fraction * 100.0,
+            consistency.marginal_coverage_95.accel_x_fraction * 100.0,
+        ));
+    } else {
+        output.push_str("- Bias ANEES and confidence coverage: unavailable\n");
+    }
+    output
 }
 
 pub fn refresh_visualization_artifact(output: &Path) -> Result<()> {

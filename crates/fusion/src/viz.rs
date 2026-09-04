@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fusion_schema::messages::{Pose, RecordHeader, StateEstimate, TruthState};
+use fusion_schema::messages::{ObservationTruth, Pose, RecordHeader, StateEstimate, TruthState};
 
 use crate::{
     bundle::{self, MeasurementRecord},
@@ -64,7 +64,9 @@ pub fn write_bundle_visualization(
     output: &Path,
 ) -> Result<()> {
     let measurements = bundle::read_measurements(&bundle_path.join("measurements.mcap"))?;
-    let truth = bundle::read_truth_states(&bundle_path.join("truth.mcap"))?;
+    let truth_path = bundle_path.join("truth.mcap");
+    let truth = bundle::read_truth_states(&truth_path)?;
+    let observation_truth = bundle::read_observation_truth(&truth_path)?;
     let estimates = bundle::read_estimates(
         &bundle_path
             .join("estimates")
@@ -105,7 +107,7 @@ pub fn write_bundle_visualization(
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::from_markdown(
-            "- **Map:** green truth, pink estimate.\n- **Camera:** bearings only; no depth.\n- **Lidar:** range and bearing; orange is early in the scan, cyan is late.\n- **Timing:** age is receipt time minus reported time. Acquisition is the interval covered by one record.\n- **Error:** absolute error, the outer radius of the 2D position 95% ellipse, and the yaw 95% bound.\n\nDrag the timeline to inspect one time across every panel.",
+            "- **Map:** green truth, pink estimate.\n- **Camera:** bearings only; no depth.\n- **Lidar:** range and bearing; orange is early in the scan, cyan is late.\n- **Timing:** age is receipt time minus reported time. Acquisition is the interval covered by one record.\n- **Error:** absolute error and reported 95% bounds.\n- **Bias:** green truth and pink estimate. Normalized error should usually stay inside ±1.96.\n\nDrag the timeline to inspect one time across every panel.",
         ),
     )?;
 
@@ -116,6 +118,7 @@ pub fn write_bundle_visualization(
     log_vehicle_motion(&rec, &truth, &estimates)?;
     log_measurements(&rec, &measurements, &truth)?;
     log_errors(&rec, &truth, &estimates)?;
+    log_biases(&rec, &observation_truth, &estimates)?;
     send_dashboard_blueprint(&rec)?;
     rec.flush_blocking()?;
     Ok(())
@@ -175,6 +178,56 @@ fn log_series_styles(rec: &rerun::RecordingStream) -> Result<()> {
             "plots/timing/imu_acquisition_ms",
             "IMU acquisition (ms)",
             ESTIMATE_COLOR,
+        ),
+        (
+            "plots/bias/gyro/value/true_radps",
+            "true gyro-z bias (rad/s)",
+            TRUTH_COLOR,
+        ),
+        (
+            "plots/bias/gyro/value/estimate_radps",
+            "estimated gyro-z bias (rad/s)",
+            ESTIMATE_COLOR,
+        ),
+        (
+            "plots/bias/gyro/normalized/error",
+            "gyro-z error / σ",
+            YAW_ERROR_COLOR,
+        ),
+        (
+            "plots/bias/gyro/normalized/lower_95",
+            "95% lower (-1.96)",
+            REFERENCE_COLOR,
+        ),
+        (
+            "plots/bias/gyro/normalized/upper_95",
+            "95% upper (+1.96)",
+            REFERENCE_COLOR,
+        ),
+        (
+            "plots/bias/accel/value/true_mps2",
+            "true accel-x bias (m/s²)",
+            TRUTH_COLOR,
+        ),
+        (
+            "plots/bias/accel/value/estimate_mps2",
+            "estimated accel-x bias (m/s²)",
+            ESTIMATE_COLOR,
+        ),
+        (
+            "plots/bias/accel/normalized/error",
+            "accel-x error / σ",
+            YAW_ERROR_COLOR,
+        ),
+        (
+            "plots/bias/accel/normalized/lower_95",
+            "95% lower (-1.96)",
+            REFERENCE_COLOR,
+        ),
+        (
+            "plots/bias/accel/normalized/upper_95",
+            "95% upper (+1.96)",
+            REFERENCE_COLOR,
         ),
     ];
     for (path, name, color) in series {
@@ -599,8 +652,20 @@ fn send_dashboard_blueprint(rec: &rerun::RecordingStream) -> Result<()> {
         TimeSeriesView::new("Observations per frame")
             .with_origin("plots/observations")
             .into(),
+        TimeSeriesView::new("Gyro-z bias")
+            .with_origin("plots/bias/gyro/value")
+            .into(),
+        TimeSeriesView::new("Accelerometer-x bias")
+            .with_origin("plots/bias/accel/value")
+            .into(),
+        TimeSeriesView::new("Gyro-z normalized error")
+            .with_origin("plots/bias/gyro/normalized")
+            .into(),
+        TimeSeriesView::new("Accelerometer-x normalized error")
+            .with_origin("plots/bias/accel/normalized")
+            .into(),
     ])
-    .with_grid_columns(2);
+    .with_grid_columns(4);
     let root = Vertical::new([
         Horizontal::new([
             overview.into(),
@@ -673,6 +738,82 @@ fn log_errors(
                 "plots/error/yaw_bound_95_rad",
                 &rerun::Scalars::single(yaw_bound_rad),
             )?;
+        }
+    }
+    Ok(())
+}
+
+fn log_biases(
+    rec: &rerun::RecordingStream,
+    observation_truth: &[ObservationTruth],
+    estimates: &[StateEstimate],
+) -> Result<()> {
+    let truth = eval::bias_truth_samples(observation_truth)?;
+    for truth in &truth {
+        rec.set_duration_secs("time", seconds(truth.reported_stamp_ns));
+        rec.log(
+            "plots/bias/gyro/value/true_radps",
+            &rerun::Scalars::single(truth.gyro_bias_z_radps),
+        )?;
+        rec.log(
+            "plots/bias/accel/value/true_mps2",
+            &rerun::Scalars::single(truth.accel_bias_x_mps2),
+        )?;
+    }
+    for estimate in estimates {
+        let (Some(gyro_bias), Some(accel_bias)) =
+            (estimate.gyro_bias_z_radps, estimate.accel_bias_x_mps2)
+        else {
+            continue;
+        };
+        rec.set_duration_secs("time", seconds(estimate.estimate_time_ns));
+        rec.log(
+            "plots/bias/gyro/value/estimate_radps",
+            &rerun::Scalars::single(gyro_bias),
+        )?;
+        rec.log(
+            "plots/bias/accel/value/estimate_mps2",
+            &rerun::Scalars::single(accel_bias),
+        )?;
+        if let Some(covariance) = eval::validated_covariance(estimate)? {
+            let (gyro_sigma, accel_sigma) = eval::bias_standard_deviations(&covariance);
+            if let Ok(index) = truth.binary_search_by_key(&estimate.estimate_time_ns, |sample| {
+                sample.reported_stamp_ns
+            }) {
+                let reference = truth[index];
+                if gyro_sigma > 0.0 {
+                    rec.log(
+                        "plots/bias/gyro/normalized/error",
+                        &rerun::Scalars::single(
+                            (gyro_bias - reference.gyro_bias_z_radps) / gyro_sigma,
+                        ),
+                    )?;
+                    rec.log(
+                        "plots/bias/gyro/normalized/lower_95",
+                        &rerun::Scalars::single(-eval::STANDARD_NORMAL_95),
+                    )?;
+                    rec.log(
+                        "plots/bias/gyro/normalized/upper_95",
+                        &rerun::Scalars::single(eval::STANDARD_NORMAL_95),
+                    )?;
+                }
+                if accel_sigma > 0.0 {
+                    rec.log(
+                        "plots/bias/accel/normalized/error",
+                        &rerun::Scalars::single(
+                            (accel_bias - reference.accel_bias_x_mps2) / accel_sigma,
+                        ),
+                    )?;
+                    rec.log(
+                        "plots/bias/accel/normalized/lower_95",
+                        &rerun::Scalars::single(-eval::STANDARD_NORMAL_95),
+                    )?;
+                    rec.log(
+                        "plots/bias/accel/normalized/upper_95",
+                        &rerun::Scalars::single(eval::STANDARD_NORMAL_95),
+                    )?;
+                }
+            }
         }
     }
     Ok(())

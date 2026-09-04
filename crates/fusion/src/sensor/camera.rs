@@ -95,7 +95,6 @@ pub(super) fn generate(
                     time_ns,
                     time_ns,
                     arrival_ns,
-                    serde_json::json!({"ideal_count": ideal_observation.features.len()}),
                     observation_truth::IdealObservation::IdealCamera(ideal_observation),
                 )),
             });

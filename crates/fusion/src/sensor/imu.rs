@@ -1,4 +1,4 @@
-use fusion_schema::messages::{ImuSample, ObservationTruth, observation_truth};
+use fusion_schema::messages::{ImuEffectsTruth, ImuSample, ObservationTruth, observation_truth};
 use nalgebra::Vector3;
 
 use crate::{
@@ -89,22 +89,13 @@ pub(super) fn generate(
                 acquisition_end_truth_ns: sample_end_ns,
                 publish_truth_ns: arrival_ns,
                 arrival_truth_ns: arrival_ns,
-                effect_values_json: serde_json::json!({
-                    "gyro_bias_radps": [
-                        gyro_bias_body_radps.x,
-                        gyro_bias_body_radps.y,
-                        gyro_bias_body_radps.z
-                    ],
-                    "accel_bias_mps2": [
-                        accel_bias_body_mps2.x,
-                        accel_bias_body_mps2.y,
-                        accel_bias_body_mps2.z
-                    ]
-                })
-                .to_string(),
                 ideal_observation: Some(observation_truth::IdealObservation::IdealImu(
                     ideal_observation,
                 )),
+                imu_effects: Some(ImuEffectsTruth {
+                    gyro_bias_body_radps: Some(to_proto(gyro_bias_body_radps)),
+                    accel_bias_body_mps2: Some(to_proto(accel_bias_body_mps2)),
+                }),
             }),
         });
 

@@ -105,7 +105,6 @@ pub(super) fn build_observation_truth(
     acquisition_start_truth_ns: i64,
     acquisition_end_truth_ns: i64,
     arrival_truth_ns: i64,
-    effect_values: serde_json::Value,
     ideal_observation: observation_truth::IdealObservation,
 ) -> ObservationTruth {
     ObservationTruth {
@@ -114,8 +113,8 @@ pub(super) fn build_observation_truth(
         acquisition_end_truth_ns,
         publish_truth_ns: arrival_truth_ns,
         arrival_truth_ns,
-        effect_values_json: effect_values.to_string(),
         ideal_observation: Some(ideal_observation),
+        imu_effects: None,
     }
 }
 

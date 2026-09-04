@@ -1,21 +1,26 @@
 use anyhow::{Context, Result, ensure};
-use fusion_schema::messages::{CovarianceKind, EstimateStatus, StateEstimate, TruthState};
+use fusion_schema::messages::{
+    CovarianceKind, EstimateStatus, ObservationTruth, StateEstimate, TruthState, observation_truth,
+};
 use nalgebra::{SMatrix, SVector};
 use serde::{Deserialize, Serialize};
 
 use crate::math;
 
-pub const METRIC_VERSION: &str = "fusion-eval-0.3";
+pub const METRIC_VERSION: &str = "fusion-eval-0.4";
 pub const METRIC_ALIGNMENT: &str = "NONE";
 
 const FULL_STATE_DIMENSION: usize = 6;
 const CONSISTENCY_STATE_DIMENSION: usize = 4;
-const STANDARD_NORMAL_95: f64 = 1.959_963_984_540_054;
+const BIAS_STATE_DIMENSION: usize = 2;
+pub(crate) const STANDARD_NORMAL_95: f64 = 1.959_963_984_540_054;
 const CHI_SQUARED_2D_95: f64 = 5.991_464_547_107_979;
 
 pub(crate) type FullCovariance = SMatrix<f64, FULL_STATE_DIMENSION, FULL_STATE_DIMENSION>;
 type ConsistencyCovariance = SMatrix<f64, CONSISTENCY_STATE_DIMENSION, CONSISTENCY_STATE_DIMENSION>;
 type ConsistencyError = SVector<f64, CONSISTENCY_STATE_DIMENSION>;
+type BiasCovariance = SMatrix<f64, BIAS_STATE_DIMENSION, BIAS_STATE_DIMENSION>;
+type BiasError = SVector<f64, BIAS_STATE_DIMENSION>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarginalCoverage {
@@ -36,6 +41,38 @@ pub struct CovarianceConsistency {
     pub normalized_anees: f64,
     pub expected_coverage_fraction: f64,
     pub marginal_coverage_95: MarginalCoverage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BiasMarginalCoverage {
+    pub gyro_z_fraction: f64,
+    pub accel_x_fraction: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BiasCovarianceConsistency {
+    pub degrees_of_freedom: usize,
+    pub expected_anees: f64,
+    pub anees: f64,
+    pub normalized_anees: f64,
+    pub expected_coverage_fraction: f64,
+    pub marginal_coverage_95: BiasMarginalCoverage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BiasEvaluation {
+    pub alignment: String,
+    pub truth_samples: usize,
+    pub estimate_samples: usize,
+    pub matched_samples: usize,
+    pub unmatched_estimate_samples: usize,
+    pub gyro_bias_z_rmse_radps: Option<f64>,
+    pub accel_bias_x_rmse_mps2: Option<f64>,
+    pub final_gyro_bias_z_error_radps: Option<f64>,
+    pub final_accel_bias_x_error_mps2: Option<f64>,
+    pub full_covariance_samples: usize,
+    pub missing_covariance_samples: usize,
+    pub covariance_consistency: Option<BiasCovarianceConsistency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,9 +102,14 @@ pub struct Metrics {
     pub full_covariance_samples: usize,
     pub missing_covariance_samples: usize,
     pub covariance_consistency: Option<CovarianceConsistency>,
+    pub bias_evaluation: Option<BiasEvaluation>,
 }
 
-pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Metrics> {
+pub fn evaluate(
+    truth: &[TruthState],
+    observation_truth: &[ObservationTruth],
+    estimates: &[StateEstimate],
+) -> Result<Metrics> {
     ensure!(!truth.is_empty(), "truth stream is empty");
     ensure!(!estimates.is_empty(), "estimate stream is empty");
     ensure!(
@@ -77,6 +119,7 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
         "truth timestamps must be strictly increasing"
     );
     let estimator_id = estimates[0].estimator_id.clone();
+    let bias_truth = bias_truth_samples(observation_truth)?;
     let mut sum_position_sq = 0.0;
     let mut sum_yaw_sq = 0.0;
     let mut matched = 0_usize;
@@ -95,6 +138,17 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
     let mut missing_covariance_samples = 0_usize;
     let mut sum_nees = 0.0;
     let mut coverage_counts = [0_usize; CONSISTENCY_STATE_DIMENSION];
+    let mut bias_estimate_samples = 0_usize;
+    let mut bias_matched_samples = 0_usize;
+    let mut bias_unmatched_estimate_samples = 0_usize;
+    let mut sum_gyro_bias_sq = 0.0;
+    let mut sum_accel_bias_sq = 0.0;
+    let mut final_gyro_bias_error = None;
+    let mut final_accel_bias_error = None;
+    let mut bias_full_covariance_samples = 0_usize;
+    let mut bias_missing_covariance_samples = 0_usize;
+    let mut sum_bias_nees = 0.0;
+    let mut bias_coverage_counts = [0_usize; BIAS_STATE_DIMENSION];
 
     for estimate in estimates {
         match EstimateStatus::try_from(estimate.status) {
@@ -126,6 +180,72 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
                 .map(|time: i64| time.max(estimate.estimate_time_ns))
                 .unwrap_or(estimate.estimate_time_ns),
         );
+        let covariance = validated_covariance(estimate).with_context(|| {
+            format!(
+                "invalid covariance at estimate time {} ns",
+                estimate.estimate_time_ns
+            )
+        })?;
+        ensure!(
+            estimate.gyro_bias_z_radps.is_some() == estimate.accel_bias_x_mps2.is_some(),
+            "estimate at {} ns must provide both planar bias values or neither",
+            estimate.estimate_time_ns
+        );
+        let bias_error = match (estimate.gyro_bias_z_radps, estimate.accel_bias_x_mps2) {
+            (Some(gyro_estimate), Some(accel_estimate)) => {
+                ensure!(
+                    gyro_estimate.is_finite() && accel_estimate.is_finite(),
+                    "estimate at {} ns has a non-finite bias value",
+                    estimate.estimate_time_ns
+                );
+                bias_estimate_samples += 1;
+                match bias_truth_at_time(&bias_truth, estimate.estimate_time_ns) {
+                    Some(reference) => {
+                        let gyro_error = gyro_estimate - reference.gyro_bias_z_radps;
+                        let accel_error = accel_estimate - reference.accel_bias_x_mps2;
+                        sum_gyro_bias_sq += gyro_error.powi(2);
+                        sum_accel_bias_sq += accel_error.powi(2);
+                        final_gyro_bias_error = Some(gyro_error);
+                        final_accel_bias_error = Some(accel_error);
+                        bias_matched_samples += 1;
+                        Some(BiasError::new(gyro_error, accel_error))
+                    }
+                    None => {
+                        bias_unmatched_estimate_samples += 1;
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        match (covariance.as_ref(), bias_error) {
+            (Some(covariance), Some(bias_error)) => {
+                let bias_covariance: BiasCovariance = covariance
+                    .fixed_view::<BIAS_STATE_DIMENSION, BIAS_STATE_DIMENSION>(4, 4)
+                    .into_owned();
+                let cholesky = bias_covariance.cholesky().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "covariance for [gyro_bias_z, accel_bias_x] is not positive definite"
+                    )
+                })?;
+                let nees = bias_error.dot(&cholesky.solve(&bias_error));
+                ensure!(
+                    nees.is_finite() && nees >= 0.0,
+                    "computed bias NEES is not finite and nonnegative"
+                );
+                sum_bias_nees += nees;
+                for index in 0..BIAS_STATE_DIMENSION {
+                    let bound = STANDARD_NORMAL_95 * bias_covariance[(index, index)].sqrt();
+                    if bias_error[index].abs() <= bound {
+                        bias_coverage_counts[index] += 1;
+                    }
+                }
+                bias_full_covariance_samples += 1;
+            }
+            (None, Some(_)) => bias_missing_covariance_samples += 1,
+            _ => {}
+        }
+
         let Some(reference) = truth_at_time(truth, estimate.estimate_time_ns)? else {
             unmatched_valid += 1;
             continue;
@@ -155,12 +275,7 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
                 .unwrap_or(position_error),
         );
 
-        match validated_covariance(estimate).with_context(|| {
-            format!(
-                "invalid covariance at estimate time {} ns",
-                estimate.estimate_time_ns
-            )
-        })? {
+        match covariance {
             Some(covariance) => {
                 let estimate_velocity = estimate.velocity_world_mps.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("full covariance estimate is missing its velocity")
@@ -180,8 +295,8 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
                     yaw_error,
                     estimate_forward_speed - reference.forward_speed_mps,
                 ]);
-                let covariance = consistency_covariance(&covariance);
-                let cholesky = covariance.cholesky().ok_or_else(|| {
+                let motion_covariance = consistency_covariance(&covariance);
+                let cholesky = motion_covariance.cholesky().ok_or_else(|| {
                     anyhow::anyhow!(
                         "covariance for [x, y, yaw, forward_speed] is not positive definite"
                     )
@@ -193,7 +308,7 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
                 );
                 sum_nees += nees;
                 for index in 0..CONSISTENCY_STATE_DIMENSION {
-                    let bound = STANDARD_NORMAL_95 * covariance[(index, index)].sqrt();
+                    let bound = STANDARD_NORMAL_95 * motion_covariance[(index, index)].sqrt();
                     if error[index].abs() <= bound {
                         coverage_counts[index] += 1;
                     }
@@ -239,6 +354,40 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
             },
         }
     });
+    let bias_evaluation = (!bias_truth.is_empty()).then(|| {
+        let covariance_consistency = (bias_full_covariance_samples > 0).then(|| {
+            let anees = sum_bias_nees / bias_full_covariance_samples as f64;
+            BiasCovarianceConsistency {
+                degrees_of_freedom: BIAS_STATE_DIMENSION,
+                expected_anees: BIAS_STATE_DIMENSION as f64,
+                anees,
+                normalized_anees: anees / BIAS_STATE_DIMENSION as f64,
+                expected_coverage_fraction: 0.95,
+                marginal_coverage_95: BiasMarginalCoverage {
+                    gyro_z_fraction: bias_coverage_counts[0] as f64
+                        / bias_full_covariance_samples as f64,
+                    accel_x_fraction: bias_coverage_counts[1] as f64
+                        / bias_full_covariance_samples as f64,
+                },
+            }
+        });
+        BiasEvaluation {
+            alignment: "exact IMU reported timestamp".to_owned(),
+            truth_samples: bias_truth.len(),
+            estimate_samples: bias_estimate_samples,
+            matched_samples: bias_matched_samples,
+            unmatched_estimate_samples: bias_unmatched_estimate_samples,
+            gyro_bias_z_rmse_radps: (bias_matched_samples > 0)
+                .then(|| (sum_gyro_bias_sq / bias_matched_samples as f64).sqrt()),
+            accel_bias_x_rmse_mps2: (bias_matched_samples > 0)
+                .then(|| (sum_accel_bias_sq / bias_matched_samples as f64).sqrt()),
+            final_gyro_bias_z_error_radps: final_gyro_bias_error,
+            final_accel_bias_x_error_mps2: final_accel_bias_error,
+            full_covariance_samples: bias_full_covariance_samples,
+            missing_covariance_samples: bias_missing_covariance_samples,
+            covariance_consistency,
+        }
+    });
     Ok(Metrics {
         metric_version: METRIC_VERSION.to_owned(),
         alignment: METRIC_ALIGNMENT.to_owned(),
@@ -275,6 +424,7 @@ pub fn evaluate(truth: &[TruthState], estimates: &[StateEstimate]) -> Result<Met
         full_covariance_samples,
         missing_covariance_samples,
         covariance_consistency,
+        bias_evaluation,
     })
 }
 
@@ -344,10 +494,88 @@ pub(crate) fn error_bounds_95(covariance: &FullCovariance) -> (f64, f64) {
     (position_bound_m, yaw_bound_rad)
 }
 
+pub(crate) fn bias_standard_deviations(covariance: &FullCovariance) -> (f64, f64) {
+    (
+        covariance[(4, 4)].max(0.0).sqrt(),
+        covariance[(5, 5)].max(0.0).sqrt(),
+    )
+}
+
 fn consistency_covariance(covariance: &FullCovariance) -> ConsistencyCovariance {
     covariance
         .fixed_view::<CONSISTENCY_STATE_DIMENSION, CONSISTENCY_STATE_DIMENSION>(0, 0)
         .into_owned()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BiasTruthSample {
+    pub(crate) reported_stamp_ns: i64,
+    pub(crate) gyro_bias_z_radps: f64,
+    pub(crate) accel_bias_x_mps2: f64,
+}
+
+pub(crate) fn bias_truth_samples(
+    observations: &[ObservationTruth],
+) -> Result<Vec<BiasTruthSample>> {
+    let mut samples = Vec::new();
+    for observation in observations {
+        let ideal_imu = match observation.ideal_observation.as_ref() {
+            Some(observation_truth::IdealObservation::IdealImu(imu)) => imu,
+            _ => {
+                ensure!(
+                    observation.imu_effects.is_none(),
+                    "non-IMU observation truth contains IMU effects"
+                );
+                continue;
+            }
+        };
+        let header = ideal_imu
+            .header
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ideal IMU truth is missing its header"))?;
+        ensure!(
+            header.record_id == observation.visible_record_id,
+            "IMU truth record ID does not match its visible observation"
+        );
+        let effects = observation
+            .imu_effects
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("IMU observation truth is missing its effects"))?;
+        let gyro = effects
+            .gyro_bias_body_radps
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("IMU effects are missing gyro bias"))?;
+        let accel = effects
+            .accel_bias_body_mps2
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("IMU effects are missing accelerometer bias"))?;
+        ensure!(
+            [gyro.x, gyro.y, gyro.z, accel.x, accel.y, accel.z]
+                .into_iter()
+                .all(f64::is_finite),
+            "IMU bias truth contains a non-finite value"
+        );
+        samples.push(BiasTruthSample {
+            reported_stamp_ns: header.reported_stamp_ns,
+            gyro_bias_z_radps: gyro.z,
+            accel_bias_x_mps2: accel.x,
+        });
+    }
+    samples.sort_by_key(|sample| sample.reported_stamp_ns);
+    ensure!(
+        samples
+            .windows(2)
+            .all(|pair| pair[0].reported_stamp_ns < pair[1].reported_stamp_ns),
+        "IMU bias truth timestamps must be strictly increasing"
+    );
+    Ok(samples)
+}
+
+fn bias_truth_at_time(truth: &[BiasTruthSample], time_ns: i64) -> Option<&BiasTruthSample> {
+    truth
+        .binary_search_by_key(&time_ns, |sample| sample.reported_stamp_ns)
+        .ok()
+        .map(|index| &truth[index])
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -424,7 +652,10 @@ fn truth_reference(state: &TruthState) -> Result<TruthReference> {
 mod tests {
     use super::*;
     use crate::math;
-    use fusion_schema::messages::{CovarianceKind, Pose, Vec3};
+    use fusion_schema::messages::{
+        CovarianceKind, ImuEffectsTruth, ImuSample, ObservationTruth, Pose, RecordHeader, Vec3,
+        observation_truth,
+    };
 
     #[test]
     fn perfect_estimate_scores_zero() {
@@ -448,8 +679,10 @@ mod tests {
             covariance_kind: CovarianceKind::Unknown as i32,
             covariance: Vec::new(),
             revision: 0,
+            gyro_bias_z_radps: None,
+            accel_bias_x_mps2: None,
         };
-        let metrics = evaluate(&[truth], &[estimate]).unwrap();
+        let metrics = evaluate(&[truth], &[], &[estimate]).unwrap();
         assert_eq!(metrics.position_rmse_m, Some(0.0));
         assert_eq!(metrics.yaw_rmse_rad, Some(0.0));
         assert_eq!(metrics.valid_output_count, 1);
@@ -481,9 +714,12 @@ mod tests {
             covariance_kind: CovarianceKind::Unknown as i32,
             covariance: Vec::new(),
             revision: 0,
+            gyro_bias_z_radps: None,
+            accel_bias_x_mps2: None,
         };
         let metrics = evaluate(
             &[truth_at(0), truth_at(1_000), truth_at(2_000)],
+            &[],
             &[estimate],
         )
         .unwrap();
@@ -520,7 +756,7 @@ mod tests {
             estimate_with_status(99),
         ];
 
-        let metrics = evaluate(&[truth], &estimates).unwrap();
+        let metrics = evaluate(&[truth], &[], &estimates).unwrap();
         assert_eq!(metrics.maximum_position_error_m, Some(10.0));
         assert_eq!(metrics.valid_output_count, 1);
         assert_eq!(metrics.initializing_output_count, 1);
@@ -543,7 +779,7 @@ mod tests {
             ..Default::default()
         };
 
-        let metrics = evaluate(&[truth], &[estimate]).unwrap();
+        let metrics = evaluate(&[truth], &[], &[estimate]).unwrap();
         assert_eq!(metrics.diverged_output_count, 1);
         assert_eq!(metrics.valid_output_fraction, 0.0);
         assert_eq!(metrics.matched_samples, 0);
@@ -572,6 +808,8 @@ mod tests {
             covariance_kind: CovarianceKind::Unknown as i32,
             covariance: Vec::new(),
             revision: 0,
+            gyro_bias_z_radps: None,
+            accel_bias_x_mps2: None,
         };
         let truth = [
             truth_at(0, 0.0, 179.0_f64.to_radians(), 0.0, 0.0),
@@ -582,7 +820,7 @@ mod tests {
             estimate_at(3_000, 2.0, (-179.0_f64).to_radians()),
         ];
 
-        let metrics = evaluate(&truth, &estimates).unwrap();
+        let metrics = evaluate(&truth, &[], &estimates).unwrap();
         assert!(metrics.position_rmse_m.unwrap() < 1.0e-12);
         assert!(metrics.yaw_rmse_rad.unwrap() < 1.0e-12);
         assert_eq!(metrics.valid_output_count, 2);
@@ -590,7 +828,7 @@ mod tests {
         assert_eq!(metrics.unmatched_valid_output_count, 1);
 
         let outside = [estimate_at(3_000, 2.0, (-179.0_f64).to_radians())];
-        let outside_metrics = evaluate(&truth, &outside).unwrap();
+        let outside_metrics = evaluate(&truth, &[], &outside).unwrap();
         assert_eq!(outside_metrics.matched_samples, 0);
         assert_eq!(outside_metrics.unmatched_valid_output_count, 1);
         assert_eq!(outside_metrics.position_rmse_m, None);
@@ -624,8 +862,10 @@ mod tests {
             covariance_kind: CovarianceKind::Full as i32,
             covariance: FullCovariance::identity().iter().copied().collect(),
             revision: 0,
+            gyro_bias_z_radps: None,
+            accel_bias_x_mps2: None,
         };
-        let metrics = evaluate(&[truth], &[estimate])?;
+        let metrics = evaluate(&[truth], &[], &[estimate])?;
         let consistency = metrics.covariance_consistency.unwrap();
         assert!((consistency.anees - 14.25).abs() < 1.0e-12);
         assert!((consistency.normalized_anees - 3.5625).abs() < 1.0e-12);
@@ -633,6 +873,65 @@ mod tests {
         assert_eq!(consistency.marginal_coverage_95.y_fraction, 0.0);
         assert_eq!(consistency.marginal_coverage_95.yaw_fraction, 1.0);
         assert_eq!(consistency.marginal_coverage_95.forward_speed_fraction, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn scores_bias_error_and_covariance_at_exact_imu_time() -> Result<()> {
+        let time_ns = 1_000;
+        let truth = TruthState {
+            truth_time_ns: time_ns,
+            pose_w_b: Some(math::yaw_pose(0.0, 0.0, 0.0, "world", "body")),
+            ..Default::default()
+        };
+        let record_id = "imu:0".to_owned();
+        let observation_truth = ObservationTruth {
+            visible_record_id: record_id.clone(),
+            acquisition_end_truth_ns: time_ns,
+            ideal_observation: Some(observation_truth::IdealObservation::IdealImu(ImuSample {
+                header: Some(RecordHeader {
+                    record_id,
+                    reported_stamp_ns: time_ns,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+            imu_effects: Some(ImuEffectsTruth {
+                gyro_bias_body_radps: Some(Vec3 {
+                    z: 0.1,
+                    ..Default::default()
+                }),
+                accel_bias_body_mps2: Some(Vec3 {
+                    x: 0.2,
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let estimate = StateEstimate {
+            estimator_id: "test".to_owned(),
+            estimate_time_ns: time_ns,
+            emission_time_ns: time_ns,
+            pose_w_b: Some(math::yaw_pose(0.0, 0.0, 0.0, "world", "body")),
+            velocity_world_mps: Some(Vec3::default()),
+            status: EstimateStatus::Valid as i32,
+            covariance_kind: CovarianceKind::Full as i32,
+            covariance: FullCovariance::identity().iter().copied().collect(),
+            gyro_bias_z_radps: Some(0.3),
+            accel_bias_x_mps2: Some(-0.2),
+            ..Default::default()
+        };
+
+        let metrics = evaluate(&[truth], &[observation_truth], &[estimate])?;
+        let bias = metrics.bias_evaluation.unwrap();
+        assert_eq!(bias.matched_samples, 1);
+        assert!((bias.gyro_bias_z_rmse_radps.unwrap() - 0.2).abs() < 1.0e-12);
+        assert!((bias.accel_bias_x_rmse_mps2.unwrap() - 0.4).abs() < 1.0e-12);
+        let consistency = bias.covariance_consistency.unwrap();
+        assert!((consistency.anees - 0.2).abs() < 1.0e-12);
+        assert!((consistency.normalized_anees - 0.1).abs() < 1.0e-12);
+        assert_eq!(consistency.marginal_coverage_95.gyro_z_fraction, 1.0);
+        assert_eq!(consistency.marginal_coverage_95.accel_x_fraction, 1.0);
         Ok(())
     }
 

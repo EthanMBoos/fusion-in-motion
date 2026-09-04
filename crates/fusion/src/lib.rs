@@ -78,9 +78,15 @@ pub(crate) fn run_resolved_experiment(
 
         // Evaluation likewise reads both persisted outputs, exercising the bundle
         // boundary instead of sharing simulator objects.
-        let replayed_truth = bundle::read_truth_states(&output.join("truth.mcap"))?;
+        let truth_path = output.join("truth.mcap");
+        let replayed_truth = bundle::read_truth_states(&truth_path)?;
+        let replayed_observation_truth = bundle::read_observation_truth(&truth_path)?;
         let replayed_estimates = bundle::read_estimates(&output.join("estimates/baseline.mcap"))?;
-        let metrics = evaluate(&replayed_truth, &replayed_estimates)?;
+        let metrics = evaluate(
+            &replayed_truth,
+            &replayed_observation_truth,
+            &replayed_estimates,
+        )?;
         bundle::write_reports(
             output,
             &metrics,
@@ -148,8 +154,10 @@ pub fn score_estimate_csv(
     );
 
     bundle::write_estimates_file(&estimate_path, estimator_id, &estimates)?;
-    let truth = bundle::read_truth_states(&run.join("truth.mcap"))?;
-    let metrics = evaluate(&truth, &estimates)?;
+    let truth_path = run.join("truth.mcap");
+    let truth = bundle::read_truth_states(&truth_path)?;
+    let observation_truth = bundle::read_observation_truth(&truth_path)?;
+    let metrics = evaluate(&truth, &observation_truth, &estimates)?;
     bundle::write_named_reports(run, estimator_id, &metrics)?;
     bundle::refresh_artifact(run, &estimate_relative)?;
     bundle::refresh_artifact(run, &format!("{report_relative}/metrics.json"))?;
