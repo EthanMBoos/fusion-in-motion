@@ -146,7 +146,6 @@ pub fn score_ego_csv(run: &Path, csv: &Path, id: &str) -> Result<eval::EgoMetric
         "{} already exists",
         run.join(&relative).display()
     );
-    bundle::write_ego_estimates_file(&run.join(&relative), id, &estimates)?;
     let truth_path = run.join("truth.mcap");
     let metrics = eval::evaluate_ego(
         &scenario,
@@ -154,6 +153,13 @@ pub fn score_ego_csv(run: &Path, csv: &Path, id: &str) -> Result<eval::EgoMetric
         &bundle::read_imu_bias_truth(&truth_path)?,
         &estimates,
     );
+    anyhow::ensure!(
+        metrics.matched_samples > 0,
+        "cannot score ego output: 0 of {} estimates matched truth within {} ms",
+        metrics.estimate_samples,
+        scenario.metrics.max_truth_match_gap_ns as f64 / 1_000_000.0
+    );
+    bundle::write_ego_estimates_file(&run.join(&relative), id, &estimates)?;
     write_external_report(run, id, &metrics)?;
     Ok(metrics)
 }
@@ -173,7 +179,6 @@ pub fn score_tracks_csv(
         "{} already exists",
         run.join(&relative).display()
     );
-    bundle::write_tracks_file(&run.join(&relative), id, &tracks)?;
     let truth_path = run.join("truth.mcap");
     let ego_label = if ego_source == EgoSource::Truth {
         "truth"
@@ -188,6 +193,13 @@ pub fn score_tracks_csv(
         &tracks,
         ego_label,
     );
+    anyhow::ensure!(
+        metrics.matched_samples > 0,
+        "cannot score track output: 0 of {} tracks matched truth within {} ms",
+        metrics.track_samples,
+        scenario.metrics.max_truth_match_gap_ns as f64 / 1_000_000.0
+    );
+    bundle::write_tracks_file(&run.join(&relative), id, &tracks)?;
     write_external_report(run, id, &metrics)?;
     Ok(metrics)
 }

@@ -1,5 +1,15 @@
 # Development instructions
 
+## Backward compatibility
+
+This is a prototype and teaching repo. Do not preserve backward compatibility
+unless the user asks for it. Keep the current API and code easy to understand.
+
+When an API, schema, or configuration changes, update the checked-in code,
+experiments, docs, and tests together. Remove replaced fields and behavior. Do
+not add aliases, migration paths, fallback parsers, or Serde defaults for old
+formats. Existing generated runs do not need to keep working.
+
 ## Visual verification
 
 Changes to the dashboard, sensor behavior, timing, localization, tracking, or

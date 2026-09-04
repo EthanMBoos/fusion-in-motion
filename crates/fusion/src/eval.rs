@@ -36,6 +36,7 @@ pub struct TrackMetrics {
     pub final_position_error_m: f64,
     pub maximum_position_error_m: f64,
     pub time_coverage_fraction: f64,
+    pub invalid_output_count: usize,
     pub position_threshold_exceeded_count: usize,
 }
 
@@ -300,6 +301,7 @@ pub fn evaluate_tracks(
         final_position_error_m,
         maximum_position_error_m: maximum_error,
         time_coverage_fraction,
+        invalid_output_count: tracks.len() - matched,
         position_threshold_exceeded_count: threshold_exceeded,
     }
 }

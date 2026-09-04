@@ -119,6 +119,13 @@ fn main() -> Result<()> {
             ScoreCommand::Ego { run, csv, id } => {
                 let metrics = fusion_in_motion::score_ego_csv(&run, &csv, &id)?;
                 println!("Vehicle position RMSE: {:.3} m", metrics.position_rmse_m);
+                println!(
+                    "Matched estimates: {}/{}  Time coverage: {:.1}%  Invalid: {}",
+                    metrics.matched_samples,
+                    metrics.estimate_samples,
+                    metrics.time_coverage_fraction * 100.0,
+                    metrics.invalid_output_count
+                );
             }
             ScoreCommand::Tracks {
                 run,
@@ -132,6 +139,13 @@ fn main() -> Result<()> {
                 };
                 let metrics = fusion_in_motion::score_tracks_csv(&run, &csv, &id, ego_source)?;
                 println!("Object position RMSE: {:.3} m", metrics.position_rmse_m);
+                println!(
+                    "Matched tracks: {}/{}  Time coverage: {:.1}%  Invalid: {}",
+                    metrics.matched_samples,
+                    metrics.track_samples,
+                    metrics.time_coverage_fraction * 100.0,
+                    metrics.invalid_output_count
+                );
             }
         },
         Command::View {

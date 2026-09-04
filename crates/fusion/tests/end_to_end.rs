@@ -350,6 +350,8 @@ fn external_outputs_can_be_scored() -> Result<()> {
     std::fs::write(&ego_csv, source)?;
     let metrics = fusion_in_motion::score_ego_csv(&run, &ego_csv, "perfect")?;
     assert!(metrics.position_rmse_m < 1.0e-12);
+    assert_eq!(metrics.matched_samples, metrics.estimate_samples);
+    assert_eq!(metrics.invalid_output_count, 0);
 
     let object_truth = bundle::read_object_truth(&run.join("truth.mcap"))?;
     let track_csv = temp.path().join("perfect-tracks.csv");
@@ -367,5 +369,58 @@ fn external_outputs_can_be_scored() -> Result<()> {
         fusion_in_motion::score_tracks_csv(&run, &track_csv, "perfect-tracks", EgoSource::Truth)?;
     assert!(metrics.position_rmse_m < 1.0e-12);
     assert!(metrics.velocity_rmse_mps < 1.0e-12);
+    assert_eq!(metrics.matched_samples, metrics.track_samples);
+    assert_eq!(metrics.invalid_output_count, 0);
+    Ok(())
+}
+
+#[test]
+fn unusable_external_outputs_are_rejected_before_writing_results() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let run = temp.path().join("run");
+    fusion_in_motion::run_experiment(&starter_experiment(), &run)?;
+
+    let empty_ego = temp.path().join("empty-ego.csv");
+    std::fs::write(&empty_ego, "estimate_time_ns,x_m,y_m,yaw_rad\n")?;
+    let error = fusion_in_motion::score_ego_csv(&run, &empty_ego, "empty-ego")
+        .expect_err("empty ego output must fail");
+    assert!(error.to_string().contains("ego CSV contains no rows"));
+    assert!(!run.join("estimates/empty-ego.mcap").exists());
+
+    let scenario = scenario::load_and_resolve(&run.join("scenario.resolved.yaml"))?;
+    let unmatched_time = bundle::read_ego_truth(&run.join("truth.mcap"))?
+        .last()
+        .unwrap()
+        .time_ns
+        + scenario.metrics.max_truth_match_gap_ns
+        + 1;
+    let unmatched_ego = temp.path().join("unmatched-ego.csv");
+    std::fs::write(
+        &unmatched_ego,
+        format!("estimate_time_ns,x_m,y_m,yaw_rad\n{unmatched_time},0,0,0\n"),
+    )?;
+    let error = fusion_in_motion::score_ego_csv(&run, &unmatched_ego, "unmatched-ego")
+        .expect_err("unmatched ego output must fail");
+    assert!(error.to_string().contains("0 of 1 estimates matched truth"));
+    assert!(!run.join("estimates/unmatched-ego.mcap").exists());
+    assert!(!run.join("reports/unmatched-ego").exists());
+
+    let unmatched_tracks = temp.path().join("unmatched-tracks.csv");
+    std::fs::write(
+        &unmatched_tracks,
+        format!(
+            "estimate_time_ns,track_id,x_m,y_m,vx_mps,vy_mps\n{unmatched_time},track-1,0,0,0,0\n"
+        ),
+    )?;
+    let error = fusion_in_motion::score_tracks_csv(
+        &run,
+        &unmatched_tracks,
+        "unmatched-tracks",
+        EgoSource::Truth,
+    )
+    .expect_err("unmatched track output must fail");
+    assert!(error.to_string().contains("0 of 1 tracks matched truth"));
+    assert!(!run.join("tracks/unmatched-tracks.mcap").exists());
+    assert!(!run.join("reports/unmatched-tracks").exists());
     Ok(())
 }
