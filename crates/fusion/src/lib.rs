@@ -75,12 +75,7 @@ pub(crate) fn run_resolved_experiment(
         })
         .collect::<Vec<_>>();
 
-    let ego_run = run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &ego_measurements,
-    )?;
+    let ego_run = run_baseline(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
     let estimated_history = EgoHistory::from_estimates(&ego_run.estimates)?;
     let estimated_tracker = tracker::run(
         &scenario.object_tracker,
@@ -117,7 +112,7 @@ pub(crate) fn run_resolved_experiment(
         output,
         &metrics,
         &ego_run.timing,
-        &ego_run.diagnostics,
+        &ego_run.gps_diagnostics,
         &estimated_tracker.diagnostics,
         &truth_tracker.diagnostics,
         &ego_run.assumptions,

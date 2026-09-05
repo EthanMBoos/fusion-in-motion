@@ -110,18 +110,8 @@ fn perception_settings_cannot_change_ego_estimates() -> Result<()> {
     let (baseline_ego, _) = split(&baseline.measurements);
     let (changed_ego, _) = split(&changed.measurements);
     assert_eq!(baseline_ego, changed_ego);
-    let first = estimator::run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &baseline_ego,
-    )?;
-    let second = estimator::run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &changed_ego,
-    )?;
+    let first = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &baseline_ego)?;
+    let second = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &changed_ego)?;
     assert_eq!(first.estimates, second.estimates);
     Ok(())
 }
@@ -131,12 +121,8 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
     let scenario = scenario::load_and_resolve(&starter_experiment())?;
     let generated = sensor::generate(&scenario)?;
     let (ego_measurements, perception) = split(&generated.measurements);
-    let ego_run = estimator::run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &ego_measurements,
-    )?;
+    let ego_run =
+        estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
     let estimated = tracker::run(
         &scenario.object_tracker,
         &perception,
@@ -213,18 +199,8 @@ fn gps_reduces_position_drift() -> Result<()> {
         .filter(|measurement| matches!(measurement, EgoMeasurement::Imu(_)))
         .cloned()
         .collect::<Vec<_>>();
-    let fused = estimator::run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &with_gps,
-    )?;
-    let drifting = estimator::run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &imu_only,
-    )?;
+    let fused = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &with_gps)?;
+    let drifting = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &imu_only)?;
     let truth = generated
         .ego_truth_states
         .last()
@@ -258,6 +234,11 @@ fn gps_outlier_is_rejected_when_gating_is_enabled() -> Result<()> {
     scenario.ego_estimator.gps_gate_sigma = 4.0;
     let generated = sensor::generate(&scenario)?;
     let (mut ego_measurements, _) = split(&generated.measurements);
+    let gps_fix_count = ego_measurements
+        .iter()
+        .filter(|measurement| matches!(measurement, EgoMeasurement::Gps(_)))
+        .count();
+    assert_eq!(gps_fix_count, 32);
     let fix = ego_measurements
         .iter_mut()
         .find_map(|measurement| match measurement {
@@ -266,14 +247,16 @@ fn gps_outlier_is_rejected_when_gating_is_enabled() -> Result<()> {
         })
         .unwrap();
     fix.position_world_m.as_mut().unwrap().x += 1_000.0;
-    let run = estimator::run_baseline(
-        &scenario.ego_estimator,
-        &scenario.imu,
-        &scenario.gps,
-        &ego_measurements,
-    )?;
-    assert!(run.diagnostics.rejected_updates >= 1);
-    assert!(run.diagnostics.applied_updates >= 1);
+    let run = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
+    assert_eq!(run.gps_diagnostics.attempted_fixes, gps_fix_count);
+    assert_eq!(
+        run.gps_diagnostics.accepted_fixes
+            + run.gps_diagnostics.rejected_fixes
+            + run.gps_diagnostics.invalid_fixes,
+        gps_fix_count
+    );
+    assert!(run.gps_diagnostics.rejected_fixes >= 1);
+    assert!(run.gps_diagnostics.accepted_fixes >= 1);
     Ok(())
 }
 
@@ -299,7 +282,7 @@ fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     let bias = scenario::load_and_resolve(&experiment("imu_bias.yaml"))?;
     let generated = sensor::generate(&bias)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(&bias.ego_estimator, &bias.imu, &bias.gps, &measurements)?;
+    let run = estimator::run_baseline(&bias.ego_estimator, &bias.imu, &measurements)?;
     assert!(
         run.estimates
             .iter()
@@ -309,24 +292,14 @@ fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     let timing = scenario::load_and_resolve(&experiment("timing.yaml"))?;
     let generated = sensor::generate(&timing)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(
-        &timing.ego_estimator,
-        &timing.imu,
-        &timing.gps,
-        &measurements,
-    )?;
+    let run = estimator::run_baseline(&timing.ego_estimator, &timing.imu, &measurements)?;
     assert!(run.timing.replayed_measurements > 0);
 
     let outliers = scenario::load_and_resolve(&experiment("outliers.yaml"))?;
     let generated = sensor::generate(&outliers)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(
-        &outliers.ego_estimator,
-        &outliers.imu,
-        &outliers.gps,
-        &measurements,
-    )?;
-    assert!(run.diagnostics.rejected_updates > 0);
+    let run = estimator::run_baseline(&outliers.ego_estimator, &outliers.imu, &measurements)?;
+    assert!(run.gps_diagnostics.rejected_fixes > 0);
     Ok(())
 }
 

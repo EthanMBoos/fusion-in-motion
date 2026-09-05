@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     math,
-    scenario::{EgoEstimatorConfig, GpsConfig, ImuConfig},
+    scenario::{EgoEstimatorConfig, ImuConfig},
 };
 
 use self::{
@@ -35,35 +35,33 @@ impl EgoMeasurement {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FilterDiagnostics {
-    pub attempted_updates: usize,
-    pub applied_updates: usize,
-    pub rejected_updates: usize,
-    pub invalid_updates: usize,
-    pub maximum_absolute_normalized_residual: f64,
+pub struct GpsDiagnostics {
+    pub attempted_fixes: usize,
+    pub accepted_fixes: usize,
+    pub rejected_fixes: usize,
+    pub invalid_fixes: usize,
+    pub maximum_normalized_residual: f64,
 }
 
-impl FilterDiagnostics {
+impl GpsDiagnostics {
     pub fn record(&mut self, result: UpdateResult) {
-        self.attempted_updates += 1;
+        self.attempted_fixes += 1;
         match result {
             UpdateResult::Applied {
                 normalized_residual,
             } => {
-                self.applied_updates += 1;
-                self.maximum_absolute_normalized_residual = self
-                    .maximum_absolute_normalized_residual
-                    .max(normalized_residual.abs());
+                self.accepted_fixes += 1;
+                self.maximum_normalized_residual =
+                    self.maximum_normalized_residual.max(normalized_residual);
             }
             UpdateResult::Rejected {
                 normalized_residual,
             } => {
-                self.rejected_updates += 1;
-                self.maximum_absolute_normalized_residual = self
-                    .maximum_absolute_normalized_residual
-                    .max(normalized_residual.abs());
+                self.rejected_fixes += 1;
+                self.maximum_normalized_residual =
+                    self.maximum_normalized_residual.max(normalized_residual);
             }
-            UpdateResult::Invalid => self.invalid_updates += 1,
+            UpdateResult::Invalid => self.invalid_fixes += 1,
         }
     }
 }
@@ -92,14 +90,13 @@ pub struct BaselineAssumptions {
 pub struct EstimatorRun {
     pub estimates: Vec<EgoStateEstimate>,
     pub timing: TimingDiagnostics,
-    pub diagnostics: FilterDiagnostics,
+    pub gps_diagnostics: GpsDiagnostics,
     pub assumptions: BaselineAssumptions,
 }
 
 pub fn run_baseline(
     config: &EgoEstimatorConfig,
     imu: &ImuConfig,
-    gps_config: &GpsConfig,
     measurements: &[EgoMeasurement],
 ) -> Result<EstimatorRun> {
     validate_delivery_order(measurements)?;
@@ -116,20 +113,19 @@ pub fn run_baseline(
         gps_gate_sigma: config.gps_gate_sigma,
     };
     if config.timing_compensation {
-        run_at_measurement_time(config, gps_config, measurements, assumptions)
+        run_at_measurement_time(config, measurements, assumptions)
     } else {
-        run_at_arrival(config, gps_config, measurements, assumptions)
+        run_at_arrival(config, measurements, assumptions)
     }
 }
 
 fn run_at_arrival(
     config: &EgoEstimatorConfig,
-    gps_config: &GpsConfig,
     measurements: &[EgoMeasurement],
     assumptions: BaselineAssumptions,
 ) -> Result<EstimatorRun> {
     let mut filter = BaselineEkf::new(config);
-    let mut diagnostics = FilterDiagnostics::default();
+    let mut gps_diagnostics = GpsDiagnostics::default();
     let mut estimates = Vec::new();
     let mut latest_imu_stamp_ns = None;
     let mut delayed = 0;
@@ -148,27 +144,24 @@ fn run_at_arrival(
                     time.arrival_time_ns,
                 ));
             }
-            EgoMeasurement::Gps(fix) => gps::update(
+            EgoMeasurement::Gps(fix) => gps_diagnostics.record(gps::update(
                 &mut filter.state,
                 &mut filter.covariance,
                 config,
-                gps_config,
                 fix,
-                &mut diagnostics,
-            )?,
+            )?),
         }
     }
     Ok(EstimatorRun {
         estimates,
         timing: timing(config, measurements, delayed, 0, 0, 0),
-        diagnostics,
+        gps_diagnostics,
         assumptions,
     })
 }
 
 fn run_at_measurement_time(
     config: &EgoEstimatorConfig,
-    gps_config: &GpsConfig,
     measurements: &[EgoMeasurement],
     assumptions: BaselineAssumptions,
 ) -> Result<EstimatorRun> {
@@ -210,7 +203,7 @@ fn run_at_measurement_time(
     });
 
     let mut filter = BaselineEkf::new(config);
-    let mut diagnostics = FilterDiagnostics::default();
+    let mut gps_diagnostics = GpsDiagnostics::default();
     let mut estimates = Vec::new();
     let mut revised = 0;
     let mut index = 0;
@@ -226,14 +219,12 @@ fn run_at_measurement_time(
                     filter.propagate(imu, &assumptions.imu_process_noise)?;
                     emission = Some(measurement.time().arrival_time_ns);
                 }
-                EgoMeasurement::Gps(fix) => gps::update(
+                EgoMeasurement::Gps(fix) => gps_diagnostics.record(gps::update(
                     &mut filter.state,
                     &mut filter.covariance,
                     config,
-                    gps_config,
                     fix,
-                    &mut diagnostics,
-                )?,
+                )?),
             }
         }
         if let Some(initial_emission) = emission {
@@ -257,7 +248,7 @@ fn run_at_measurement_time(
     Ok(EstimatorRun {
         estimates,
         timing: timing(config, measurements, delayed, replayed, discarded, revised),
-        diagnostics,
+        gps_diagnostics,
         assumptions,
     })
 }

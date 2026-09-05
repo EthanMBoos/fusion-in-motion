@@ -17,7 +17,7 @@ use mcap::{Writer, records::MessageHeader};
 use prost::Message;
 
 use crate::{
-    estimator::{BaselineAssumptions, FilterDiagnostics, TimingDiagnostics},
+    estimator::{BaselineAssumptions, GpsDiagnostics, TimingDiagnostics},
     eval::RunMetrics,
     scenario::{ResolvedScenario, canonical_yaml},
     tracker::TrackerDiagnostics,
@@ -215,7 +215,7 @@ pub fn write_reports(
     output: &Path,
     metrics: &RunMetrics,
     ego_timing: &TimingDiagnostics,
-    ego_diagnostics: &FilterDiagnostics,
+    gps_diagnostics: &GpsDiagnostics,
     tracker_estimated_diagnostics: &TrackerDiagnostics,
     tracker_truth_diagnostics: &TrackerDiagnostics,
     assumptions: &BaselineAssumptions,
@@ -224,7 +224,7 @@ pub fn write_reports(
     let json = serde_json::json!({
         "metrics": metrics,
         "ego_timing": ego_timing,
-        "ego_updates": ego_diagnostics,
+        "gps_fixes": gps_diagnostics,
         "estimated_ego_tracker_updates": tracker_estimated_diagnostics,
         "truth_ego_tracker_updates": tracker_truth_diagnostics,
         "ego_filter_assumptions": assumptions,
@@ -237,15 +237,15 @@ pub fn write_reports(
         "# Run result\n\n\
          GPS and IMU estimate the vehicle. Camera and lidar track objects.\n\n\
          ## Vehicle\n\n\
-         Position RMSE: {:.3} m  \nHeading RMSE: {:.3} rad  \nGPS updates applied/rejected/invalid: {}/{}/{}\n\n\
+         Position RMSE: {:.3} m  \nHeading RMSE: {:.3} rad  \nGPS fixes accepted/rejected/invalid: {}/{}/{}\n\n\
          ## Objects\n\n\
          Truth ego position RMSE: {:.3} m  \nEstimated ego position RMSE: {:.3} m  \nCost of estimated ego: {:+.3} m\n\n\
          Estimated-ego associations, camera/lidar: {}/{}  \nUnmatched camera/lidar detections: {}/{}  \nTracks created/confirmed/deleted: {}/{}/{}\n",
         metrics.ego.position_rmse_m,
         metrics.ego.yaw_rmse_rad,
-        ego_diagnostics.applied_updates,
-        ego_diagnostics.rejected_updates,
-        ego_diagnostics.invalid_updates,
+        gps_diagnostics.accepted_fixes,
+        gps_diagnostics.rejected_fixes,
+        gps_diagnostics.invalid_fixes,
         metrics.tracks_with_truth_ego.position_rmse_m,
         metrics.tracks_with_estimated_ego.position_rmse_m,
         metrics.estimated_ego_position_rmse_delta_m,
