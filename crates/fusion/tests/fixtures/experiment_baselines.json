@@ -1,0 +1,118 @@
+{
+  "relative_tolerance_fraction": 0.01,
+  "experiments": {
+    "association": {
+      "metrics": {
+        "tracks_with_truth_ego": {
+          "position_rmse_m": 0.031389562773327294
+        }
+      },
+      "estimated_ego_tracker_updates": {
+        "created_tracks": 2,
+        "confirmed_tracks": 2,
+        "deleted_tracks": 0
+      }
+    },
+    "imu_bias": {
+      "metrics": {
+        "ego": {
+          "position_rmse_m": 0.2702076502823106,
+          "gyro_bias_rmse_radps": 0.010745790770856902,
+          "accel_bias_rmse_mps2": 0.11440810282111859,
+          "gyro_bias_95pct_coverage": 1.0,
+          "accel_bias_95pct_coverage": 0.909375
+        }
+      }
+    },
+    "initial": {
+      "metrics": {
+        "ego": {
+          "position_rmse_m": 0.21748218857909152
+        },
+        "tracks_with_estimated_ego": {
+          "position_rmse_m": 0.2695321160687578
+        },
+        "tracks_with_truth_ego": {
+          "position_rmse_m": 0.025955794507907356
+        }
+      }
+    },
+    "outliers": {
+      "metrics": {
+        "ego": {
+          "position_rmse_m": 0.24087480761075872
+        }
+      },
+      "gps_fixes": {
+        "attempted_fixes": 32,
+        "accepted_fixes": 23,
+        "rejected_fixes": 9
+      }
+    },
+    "perception": {
+      "metrics": {
+        "tracks_with_truth_ego": {
+          "position_rmse_m": 0.1661732250725716,
+          "time_coverage_fraction": 0.93125
+        }
+      }
+    },
+    "timing": {
+      "metrics": {
+        "ego": {
+          "position_rmse_m": 0.2164369720557162
+        }
+      },
+      "ego_timing": {
+        "delayed_measurements": 31,
+        "replayed_measurements": 31,
+        "discarded_measurements": 0
+      }
+    }
+  },
+  "sweeps": {
+    "localization_sweep": {
+      "case_count": 45,
+      "groups": [
+        { "parameters": { "gps.horizontal_position_stddev_m": 0.1, "gps.rate_hz": 1.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.10772438594765152, "stddev_ego_position_rmse_m": 0.010609005831517873 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 0.1, "gps.rate_hz": 2.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.07994765796642973, "stddev_ego_position_rmse_m": 0.01026738024796856 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 0.1, "gps.rate_hz": 5.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.05999497100498504, "stddev_ego_position_rmse_m": 0.006468931648896214 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 0.5, "gps.rate_hz": 1.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.3697780054989503, "stddev_ego_position_rmse_m": 0.04604617978777524 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 0.5, "gps.rate_hz": 2.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.2874506926609416, "stddev_ego_position_rmse_m": 0.04758704409758368 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 0.5, "gps.rate_hz": 5.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.23476517241746472, "stddev_ego_position_rmse_m": 0.05263249407499467 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 1.0, "gps.rate_hz": 1.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.591074576243839, "stddev_ego_position_rmse_m": 0.1299156945399396 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 1.0, "gps.rate_hz": 2.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.4631921580139061, "stddev_ego_position_rmse_m": 0.10056618683190646 },
+        { "parameters": { "gps.horizontal_position_stddev_m": 1.0, "gps.rate_hz": 5.0 }, "cases": 5, "mean_ego_position_rmse_m": 0.39542388413918406, "stddev_ego_position_rmse_m": 0.10783873912545548 }
+      ]
+    },
+    "perception_sweep": {
+      "case_count": 15,
+      "groups": [
+        {
+          "parameters": { "camera.enabled": true, "lidar.enabled": false },
+          "cases": 5,
+          "mean_truth_ego_track_rmse_m": null,
+          "stddev_truth_ego_track_rmse_m": null,
+          "mean_truth_ego_track_time_coverage_fraction": 0.0,
+          "stddev_truth_ego_track_time_coverage_fraction": 0.0
+        },
+        {
+          "parameters": { "camera.enabled": false, "lidar.enabled": true },
+          "cases": 5,
+          "mean_truth_ego_track_rmse_m": 0.5725105744493991,
+          "stddev_truth_ego_track_rmse_m": 0.14591197166989572,
+          "mean_truth_ego_track_time_coverage_fraction": 0.85,
+          "stddev_truth_ego_track_time_coverage_fraction": 0.055901699437494734
+        },
+        {
+          "parameters": { "camera.enabled": true, "lidar.enabled": true },
+          "cases": 5,
+          "mean_truth_ego_track_rmse_m": 0.18705428539941,
+          "stddev_truth_ego_track_rmse_m": 0.13171905939874673,
+          "mean_truth_ego_track_time_coverage_fraction": 0.93,
+          "stddev_truth_ego_track_time_coverage_fraction": 0.002795084971874727
+        }
+      ]
+    }
+  }
+}

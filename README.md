@@ -49,6 +49,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release --workspace
 ```
 
+Run every experiment and sweep and compare the results with the
+[committed baselines](crates/fusion/tests/fixtures/experiment_baselines.json):
+
+```sh
+cargo test -p fusion-in-motion --test experiment_regressions
+```
+
+Selected metrics may differ by 1%; counts must match. Failures print the
+changed value.
+
 Dashboard and experiment changes also require the screenshot workflow in
 [AGENTS.md](AGENTS.md).
 

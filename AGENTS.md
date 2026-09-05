@@ -10,6 +10,16 @@ experiments, docs, and tests together. Remove replaced fields and behavior. Do
 not add aliases, migration paths, fallback parsers, or Serde defaults for old
 formats. Existing generated runs do not need to keep working.
 
+## Tests
+
+Before adding a test, identify the failure it uniquely catches and check for
+overlap with the existing unit and end-to-end tests. Command completion checks
+wiring; it does not protect numerical results.
+
+A numerical regression test should cover the few values that define the lesson,
+using reviewed baselines committed to Git or a clear control. Failures must show
+the baseline, current value, and difference.
+
 ## Visual verification
 
 Changes to the dashboard, sensor behavior, timing, localization, tracking, or
