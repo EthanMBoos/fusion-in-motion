@@ -20,8 +20,9 @@ left, and yaw is positive counterclockwise. All sensors are at the vehicle
 origin in this version.
 
 Each sensor record has a measurement time and an arrival time. They are equal
-in the starter. `experiments/timing.yaml` adds latency and uses the measurement
-time when replaying delayed data. Each lidar detection has its own measurement
+in the starter. `experiments/timing.yaml` delays GPS and can process the
+completed GPS/IMU run in measurement-time order. This is an offline reference,
+not an online rewind/replay filter. Each lidar detection has its own measurement
 time because one scan can collect returns at different times.
 
 The starter vehicle covariance is a row-major 4×4 matrix ordered as:

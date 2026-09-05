@@ -1,8 +1,8 @@
-# Sensor timing experiment
+# Delayed GPS experiment
 #
-# Question: What happens when measurements arrive after the moment they describe?
-# Watch GPS age and vehicle/object error during the turns.
-# Turn off both compensation settings and compare delayed-measurement counts.
+# Question: What happens to the vehicle estimate when GPS arrives late?
+# Compare processing GPS/IMU data by measurement time and by arrival time.
+# Watch GPS age and vehicle error during the turns.
 
 root_seed: 20260823
 
@@ -25,24 +25,10 @@ trajectory:
   - { id: brake, duration_s: 2.0, longitudinal_acceleration_mps2: -0.5, yaw_rate_radps: 0.0 }
   - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
 
-imu:
-  # Each latency delays arrival without changing measurement time.
-  latency_ns: 1000000
-
 gps:
-  latency_ns: 120000000
-
-camera:
-  latency_ns: 18000000
-
-lidar:
-  latency_ns: 32000000
-  # Returns within one scan are measured at different times.
-  scan_duration_ns: 80000000
+  # The fix describes an earlier position but arrives 500 ms later.
+  latency_ns: 500000000
 
 ego_estimator:
-  # Try false here and for the object tracker.
-  timing_compensation: true
-
-object_tracker:
+  # Run once with true, then change this to false and compare the runs.
   timing_compensation: true

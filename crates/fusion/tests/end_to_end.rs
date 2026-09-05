@@ -117,11 +117,12 @@ fn lesson_reports_show_the_result_and_changed_settings() -> Result<()> {
 
     let timing_summary = std::fs::read_to_string(timing_run.join("reports/baseline/summary.md"))?;
     assert!(timing_summary.contains("## Vehicle timing"));
-    assert!(timing_summary.contains("Replayed measurements: 31"));
+    assert!(timing_summary.contains("Processing: offline measurement-time order"));
+    assert!(timing_summary.contains("Delayed measurements reordered: 31"));
     assert!(!timing_summary.contains("## IMU bias"));
 
     let comparison = fusion_in_motion::compare::render(&bias_run, &timing_run)?;
-    assert!(comparison.contains("gps.latency_ns: 0 -> 120000000"));
+    assert!(comparison.contains("gps.latency_ns: 0 -> 500000000"));
     assert!(comparison.contains("ego_estimator.timing_compensation: false -> true"));
     assert!(comparison.find("Changed settings:") < comparison.find("Results:"));
     Ok(())
@@ -319,6 +320,12 @@ fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     );
 
     let timing = scenario::load_and_resolve(&experiment("timing.yaml"))?;
+    assert_eq!(timing.imu.latency_ns, 0);
+    assert_eq!(timing.gps.latency_ns, 500_000_000);
+    assert_eq!(timing.camera.latency_ns, 0);
+    assert_eq!(timing.lidar.latency_ns, 0);
+    assert_eq!(timing.lidar.scan_duration_ns, 0);
+    assert!(!timing.object_tracker.timing_compensation);
     let generated = sensor::generate(&timing)?;
     let (measurements, _) = split(&generated.measurements);
     let run = estimator::run_baseline(&timing.ego_estimator, &timing.imu, &measurements)?;

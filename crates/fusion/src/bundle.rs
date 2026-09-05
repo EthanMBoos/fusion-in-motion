@@ -276,16 +276,16 @@ pub fn write_reports(
     if ego_timing.timing_compensation || ego_timing.maximum_delivery_age_ns > 0 {
         summary.push_str(&format!(
             "\n## Vehicle timing\n\n\
-             Timing compensation: {}  \n\
+             Processing: {}  \n\
              Delayed measurements: {}  \n\
-             Replayed measurements: {}  \n\
+             Delayed measurements reordered: {}  \n\
              Revised estimates: {}  \n\
              Discarded measurements: {}  \n\
              Maximum arrival delay: {:.1} ms\n",
             if ego_timing.timing_compensation {
-                "on"
+                "offline measurement-time order"
             } else {
-                "off"
+                "arrival order"
             },
             ego_timing.delayed_measurements,
             ego_timing.replayed_measurements,

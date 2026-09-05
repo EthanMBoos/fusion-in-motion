@@ -329,7 +329,7 @@ The current starter is the quick tour. Each later demo isolates one new idea.
 | 2 | GPS rate and noise | GPS rate, position noise, GPS on/off | vehicle RMSE and orange-versus-purple object error | Present through starter edits and sweep |
 | 3 | IMU bias | initial bias, bias walk, estimation on/off | bias truth/estimate/bounds, vehicle error, multi-seed coverage | Present |
 | 4 | Bad GPS fixes | outlier rate/size, gate | innovation, accepted/rejected fixes, vehicle error | Present |
-| 5 | Delayed data | sensor latency, scan time, replay on/off | measurement age and turn error before/after compensation | Present |
+| 5 | Delayed GPS reference | GPS latency, measurement-time order on/off | GPS age and turn error | Present; offline |
 | 6 | GPS interruption and urban error | outage interval, position drift, correlated bias, recovery | drift growth, recovery, global versus relative object error | New, highest-priority localization demo |
 | 7 | Lidar track from known ego | target speed, lidar rate/noise, process noise | position/velocity error and covariance | New focused tracker base |
 | 8 | Camera plus lidar | camera/lidar rates and enable flags | lidar initializes range; camera sharpens direction between scans | Split out of starter |
