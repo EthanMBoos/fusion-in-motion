@@ -4,7 +4,7 @@ use anyhow::Result;
 use fusion_in_motion::{
     bundle::{self, MeasurementRecord},
     estimator::{self, EgoMeasurement},
-    scenario, sensor,
+    scenario, sensor, sweep,
     tracker::{self, EgoHistory, EgoSource, PerceptionMeasurement},
 };
 use prost::Message;
@@ -219,6 +219,79 @@ fn association_experiment_keeps_two_tracker_owned_ids() -> Result<()> {
 }
 
 #[test]
+fn perception_study_compares_camera_lidar_and_both() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("perception");
+    let report = sweep::run(&experiment("perception_sweep.yaml"), &output)?;
+    assert_eq!(report.case_count, 15);
+    assert_eq!(report.groups.len(), 3);
+
+    let group = |camera, lidar| {
+        report
+            .groups
+            .iter()
+            .find(|group| {
+                group.parameters["camera.enabled"].as_bool() == Some(camera)
+                    && group.parameters["lidar.enabled"].as_bool() == Some(lidar)
+            })
+            .unwrap()
+    };
+    let camera_only = group(true, false);
+    let lidar_only = group(false, true);
+    let both = group(true, true);
+
+    assert!(camera_only.mean_truth_ego_track_rmse_m.is_none());
+    assert_eq!(
+        camera_only.mean_truth_ego_track_time_coverage_fraction,
+        Some(0.0)
+    );
+    assert!(
+        both.mean_truth_ego_track_rmse_m.unwrap() < lidar_only.mean_truth_ego_track_rmse_m.unwrap()
+    );
+    assert!(
+        both.mean_truth_ego_track_time_coverage_fraction.unwrap()
+            > lidar_only
+                .mean_truth_ego_track_time_coverage_fraction
+                .unwrap()
+    );
+
+    for seed in 10..=14 {
+        let case = |camera, lidar| {
+            report
+                .cases
+                .iter()
+                .find(|case| {
+                    case.root_seed == seed
+                        && case.parameters["camera.enabled"].as_bool() == Some(camera)
+                        && case.parameters["lidar.enabled"].as_bool() == Some(lidar)
+                })
+                .unwrap()
+                .metrics
+                .as_ref()
+                .unwrap()
+        };
+        let camera_only = case(true, false);
+        let lidar_only = case(false, true);
+        let both = case(true, true);
+        assert_eq!(camera_only.tracks_with_truth_ego.position_rmse_m, None);
+        assert_eq!(camera_only.estimated_ego_position_rmse_delta_m, None);
+        assert_eq!(lidar_only.ego.position_rmse_m, both.ego.position_rmse_m);
+        assert!(
+            both.tracks_with_truth_ego.position_rmse_m.unwrap()
+                < lidar_only.tracks_with_truth_ego.position_rmse_m.unwrap()
+        );
+    }
+
+    let camera_summary =
+        std::fs::read_to_string(output.join("case-0000/reports/baseline/summary.md"))?;
+    assert!(camera_summary.contains("— (no matched tracks)"));
+    let comparison =
+        fusion_in_motion::compare::render(&output.join("case-0000"), &output.join("case-0005"))?;
+    assert!(comparison.contains("Object RMSE, truth ego:     no track ->"));
+    Ok(())
+}
+
+#[test]
 fn gps_reduces_position_drift() -> Result<()> {
     let mut scenario = scenario::load_and_resolve(&starter_experiment())?;
     scenario.imu.accel_bias_mps2 = 0.025;
@@ -376,8 +449,8 @@ fn external_outputs_can_be_scored() -> Result<()> {
     std::fs::write(&track_csv, source)?;
     let metrics =
         fusion_in_motion::score_tracks_csv(&run, &track_csv, "perfect-tracks", EgoSource::Truth)?;
-    assert!(metrics.position_rmse_m < 1.0e-12);
-    assert!(metrics.velocity_rmse_mps < 1.0e-12);
+    assert!(metrics.position_rmse_m.unwrap() < 1.0e-12);
+    assert!(metrics.velocity_rmse_mps.unwrap() < 1.0e-12);
     assert_eq!(metrics.matched_samples, metrics.track_samples);
     assert_eq!(metrics.invalid_output_count, 0);
     Ok(())

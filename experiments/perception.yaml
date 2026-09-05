@@ -1,0 +1,54 @@
+# Camera and lidar experiment
+#
+# Question: What does each object sensor add to the track?
+# Lidar measures distance and direction, but only scans once a second and may
+# miss the object. Camera measures direction ten times a second.
+# The sweep compares camera only, lidar only, and both with the same random seeds.
+# Watch the purple truth-ego track and the object-error plot.
+
+root_seed: 20260823
+
+world:
+  objects:
+    - id: crossing
+      initial_position_m: { x: 10.0, y: -4.0 }
+      velocity_world_mps: { x: 0.0, y: 0.5 }
+
+trajectory:
+  - { id: watch-crossing, duration_s: 16.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+
+imu:
+  enabled: true
+  rate_hz: 100.0
+  gyro_white_noise_density_radps_sqrt_hz: 0.0008
+  accel_white_noise_density_mps2_sqrt_hz: 0.012
+
+gps:
+  enabled: true
+  rate_hz: 2.0
+  horizontal_position_stddev_m: 0.25
+
+camera:
+  # The tracker waits for a lidar distance before creating a track.
+  enabled: true
+  rate_hz: 10.0
+  horizontal_fov_rad: 2.8
+  max_range_m: 25.0
+  bearing_noise_stddev_rad: 0.006
+  detection_probability: 0.95
+
+lidar:
+  enabled: true
+  rate_hz: 1.0
+  horizontal_fov_rad: 6.283185307179586
+  max_range_m: 25.0
+  range_noise_stddev_m: 0.05
+  # Direction is intentionally noisier than the camera measurement.
+  bearing_noise_stddev_rad: 0.08
+  detection_probability: 0.85
+
+object_tracker:
+  acceleration_noise_stddev_mps2: 0.2
+  gate_sigma: 4.0
+  confirmation_hits: 2
+  max_missed_lidar_scans: 3

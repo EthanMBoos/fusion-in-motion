@@ -233,22 +233,26 @@ pub fn write_reports(
         report_dir.join("metrics.json"),
         serde_json::to_vec_pretty(&json)?,
     )?;
+    let truth_ego_track_rmse = display_track_rmse(metrics.tracks_with_truth_ego.position_rmse_m);
+    let estimated_ego_track_rmse =
+        display_track_rmse(metrics.tracks_with_estimated_ego.position_rmse_m);
+    let ego_cost = metrics
+        .estimated_ego_position_rmse_delta_m
+        .map(|value| format!("{value:+.3} m"))
+        .unwrap_or_else(|| "—".to_owned());
     let mut summary = format!(
         "# Run result\n\n\
          GPS and IMU estimate the vehicle. Camera and lidar track objects.\n\n\
          ## Vehicle\n\n\
          Position RMSE: {:.3} m  \nHeading RMSE: {:.3} rad  \nGPS fixes accepted/rejected/invalid: {}/{}/{}\n\n\
          ## Objects\n\n\
-         Truth ego position RMSE: {:.3} m  \nEstimated ego position RMSE: {:.3} m  \nCost of estimated ego: {:+.3} m\n\n\
+         Truth ego position RMSE: {truth_ego_track_rmse}  \nEstimated ego position RMSE: {estimated_ego_track_rmse}  \nCost of estimated ego: {ego_cost}\n\n\
          Estimated-ego associations, camera/lidar: {}/{}  \nUnmatched camera/lidar detections: {}/{}  \nTracks created/confirmed/deleted: {}/{}/{}\n",
         metrics.ego.position_rmse_m,
         metrics.ego.yaw_rmse_rad,
         gps_diagnostics.accepted_fixes,
         gps_diagnostics.rejected_fixes,
         gps_diagnostics.invalid_fixes,
-        metrics.tracks_with_truth_ego.position_rmse_m,
-        metrics.tracks_with_estimated_ego.position_rmse_m,
-        metrics.estimated_ego_position_rmse_delta_m,
         tracker_estimated_diagnostics.associated_camera_detections,
         tracker_estimated_diagnostics.associated_lidar_detections,
         tracker_estimated_diagnostics.unmatched_camera_detections,
@@ -296,6 +300,12 @@ pub fn write_reports(
     }
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
+}
+
+fn display_track_rmse(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.3} m"))
+        .unwrap_or_else(|| "— (no matched tracks)".to_owned())
 }
 
 fn write_measurements(path: &Path, records: &[MeasurementRecord]) -> Result<()> {

@@ -138,7 +138,12 @@ fn main() -> Result<()> {
                     EgoSourceArg::Truth => EgoSource::Truth,
                 };
                 let metrics = fusion_in_motion::score_tracks_csv(&run, &csv, &id, ego_source)?;
-                println!("Object position RMSE: {:.3} m", metrics.position_rmse_m);
+                println!(
+                    "Object position RMSE: {:.3} m",
+                    metrics
+                        .position_rmse_m
+                        .expect("scored tracks have matched truth")
+                );
                 println!(
                     "Matched tracks: {}/{}  Time coverage: {:.1}%  Invalid: {}",
                     metrics.matched_samples,

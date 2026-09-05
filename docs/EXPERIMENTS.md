@@ -9,7 +9,8 @@ Work through them in this order:
 2. [`imu_bias.yaml`](../experiments/imu_bias.yaml)
 3. [`outliers.yaml`](../experiments/outliers.yaml)
 4. [`timing.yaml`](../experiments/timing.yaml)
-5. [`association.yaml`](../experiments/association.yaml)
+5. [`perception.yaml`](../experiments/perception.yaml)
+6. [`association.yaml`](../experiments/association.yaml)
 
 Run one with:
 
@@ -23,12 +24,14 @@ The default output is the next free `runs/runNNN` directory. Reopen it with
 
 ## Sweeps
 
-[`localization_sweep.yaml`](../experiments/localization_sweep.yaml) and
-[`perception_sweep.yaml`](../experiments/perception_sweep.yaml) run parameter
-grids over paired random seeds:
+[`localization_sweep.yaml`](../experiments/localization_sweep.yaml) runs a
+parameter grid over paired random seeds.
+[`perception.yaml`](../experiments/perception.yaml) defines the camera/lidar
+study, and [`perception_sweep.yaml`](../experiments/perception_sweep.yaml) runs
+its three sensor cases:
 
 ```sh
-fusion sweep experiments/localization_sweep.yaml --output runs/localization-sweep
+fusion sweep experiments/perception_sweep.yaml --output runs/perception-sweep
 ```
 
 The report contains every case, group means, sample standard deviation, and a

@@ -22,11 +22,10 @@ matches, makes a one-to-one global nearest-neighbor assignment, and manages
 track birth, confirmation, coasting, and deletion. The next tracking work is to
 score identity continuity and add false detections and harder occlusions.
 
-The current camera/lidar comparison is also weak. A precise 360-degree lidar at
-5 Hz already supplies range and direction. The 10 Hz camera adds only more
-bearing updates. A focused fusion demo needs slower, intermittent, or narrower
-lidar, or a camera observation that helps with identity or class. Otherwise it
-does not show why both sensors are useful.
+The camera/lidar study uses one object so association cannot hide the sensor
+effect. Slow, intermittent lidar starts the metric track and supplies distance.
+Camera bearings update direction between scans. The association experiment
+adds a second object separately.
 
 There is no single public benchmark for this exact two-stage system. Validate
 it in three ways:
@@ -332,7 +331,7 @@ The current starter is the quick tour. Each later demo isolates one new idea.
 | 5 | Delayed GPS reference | GPS latency, measurement-time order on/off | GPS age and turn error | Present; offline |
 | 6 | GPS interruption and urban error | outage interval, position drift, correlated bias, recovery | drift growth, recovery, global versus relative object error | New, highest-priority localization demo |
 | 7 | Lidar track from known ego | target speed, lidar rate/noise, process noise | position/velocity error and covariance | New focused tracker base |
-| 8 | Camera plus lidar | camera/lidar rates and enable flags | lidar initializes range; camera sharpens direction between scans | Split out of starter |
+| 8 | Camera plus lidar | camera/lidar enable flags | lidar initializes range; camera sharpens direction between scans | Present |
 | 9 | Maneuvering target | target acceleration/turn, CV process noise, later CA/CTRV/IMM | lag, NIS, position/velocity error around maneuver | New |
 | 10 | Lost detections and track life | FOV, occlusion interval, detection probability, confirmation/deletion rules | initialization delay, coasting, gaps, deletion/reacquisition | New |
 | 11 | Association and clutter | object spacing, crossing angle, false detections, gate, assignment method | HOTA parts, GOSPA, ID switches, track timeline | Crossing baseline present; clutter and metrics remain |

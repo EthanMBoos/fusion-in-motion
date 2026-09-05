@@ -30,11 +30,11 @@ pub struct TrackMetrics {
     pub track_samples: usize,
     pub matched_samples: usize,
     pub track_count: usize,
-    pub position_rmse_m: f64,
-    pub velocity_rmse_mps: f64,
-    pub relative_position_rmse_m: f64,
-    pub final_position_error_m: f64,
-    pub maximum_position_error_m: f64,
+    pub position_rmse_m: Option<f64>,
+    pub velocity_rmse_mps: Option<f64>,
+    pub relative_position_rmse_m: Option<f64>,
+    pub final_position_error_m: Option<f64>,
+    pub maximum_position_error_m: Option<f64>,
     pub time_coverage_fraction: f64,
     pub invalid_output_count: usize,
     pub position_threshold_exceeded_count: usize,
@@ -46,7 +46,7 @@ pub struct RunMetrics {
     pub ego: EgoMetrics,
     pub tracks_with_estimated_ego: TrackMetrics,
     pub tracks_with_truth_ego: TrackMetrics,
-    pub estimated_ego_position_rmse_delta_m: f64,
+    pub estimated_ego_position_rmse_delta_m: Option<f64>,
 }
 
 pub fn evaluate(
@@ -76,9 +76,11 @@ pub fn evaluate(
         "truth",
     );
     RunMetrics {
-        metric_version: "fusion-eval-2.0".to_owned(),
-        estimated_ego_position_rmse_delta_m: tracks_with_estimated_ego.position_rmse_m
-            - tracks_with_truth_ego.position_rmse_m,
+        metric_version: "fusion-eval-3.0".to_owned(),
+        estimated_ego_position_rmse_delta_m: tracks_with_estimated_ego
+            .position_rmse_m
+            .zip(tracks_with_truth_ego.position_rmse_m)
+            .map(|(estimated, truth)| estimated - truth),
         ego,
         tracks_with_estimated_ego,
         tracks_with_truth_ego,
@@ -280,26 +282,25 @@ pub fn evaluate_tracks(
             .sum::<f64>()
             / objects.len() as f64
     };
-    let final_position_error_m = if objects.is_empty() {
-        0.0
-    } else {
+    let final_position_error_m = (!objects.is_empty()).then(|| {
         (objects
             .values()
             .map(|(_, _, final_error)| final_error.powi(2))
             .sum::<f64>()
             / objects.len() as f64)
             .sqrt()
-    };
+    });
     TrackMetrics {
         ego_source: ego_source.to_owned(),
         track_samples: tracks.len(),
         matched_samples: matched,
         track_count: objects.len(),
-        position_rmse_m: rms(position_squared, matched),
-        velocity_rmse_mps: rms(velocity_squared, matched),
-        relative_position_rmse_m: rms(relative_squared, relative_matched),
+        position_rmse_m: (matched > 0).then(|| rms(position_squared, matched)),
+        velocity_rmse_mps: (matched > 0).then(|| rms(velocity_squared, matched)),
+        relative_position_rmse_m: (relative_matched > 0)
+            .then(|| rms(relative_squared, relative_matched)),
         final_position_error_m,
-        maximum_position_error_m: maximum_error,
+        maximum_position_error_m: (matched > 0).then_some(maximum_error),
         time_coverage_fraction,
         invalid_output_count: tracks.len() - matched,
         position_threshold_exceeded_count: threshold_exceeded,

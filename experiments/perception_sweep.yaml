@@ -1,9 +1,10 @@
-# Question: How do missed camera and lidar detections change object tracking?
-# Compare object error and the extra error caused by using the estimated vehicle pose.
+# The scenario and question are in perception.yaml.
+# Values in the same list position form one case.
 
-name: Camera and lidar detection rate
-base_scenario: initial.yaml
+name: Camera only, lidar only, and both
+base_scenario: perception.yaml
 seeds: [10, 11, 12, 13, 14]
+parameter_combinations: zip
 parameters:
-  camera.detection_probability: [0.6, 0.96]
-  lidar.detection_probability: [0.6, 0.98]
+  camera.enabled: [true, false, true]
+  lidar.enabled: [false, true, true]

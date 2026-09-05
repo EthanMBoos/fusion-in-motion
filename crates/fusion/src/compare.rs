@@ -25,8 +25,20 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
             .map(|change| format!("  {change}\n"))
             .collect()
     };
+    let estimated_ego_tracks = render_track_change(
+        &baseline_metrics.tracks_with_estimated_ego,
+        &variant_metrics.tracks_with_estimated_ego,
+    );
+    let truth_ego_tracks = render_track_change(
+        &baseline_metrics.tracks_with_truth_ego,
+        &variant_metrics.tracks_with_truth_ego,
+    );
+    let ego_cost = render_optional_change(
+        baseline_metrics.estimated_ego_position_rmse_delta_m,
+        variant_metrics.estimated_ego_position_rmse_delta_m,
+    );
     Ok(format!(
-        "Baseline: {}\nVariant:  {}\n\nChanged settings:\n{}\nResults:\nVehicle position RMSE: {:.3} -> {:.3} m ({:+.3})\nVehicle heading RMSE:  {:.3} -> {:.3} rad ({:+.3})\nObject RMSE, estimated ego: {:.3} -> {:.3} m ({:+.3})\nObject RMSE, truth ego:     {:.3} -> {:.3} m ({:+.3})\nEgo cost in object tracks:  {:.3} -> {:.3} m ({:+.3})\n",
+        "Baseline: {}\nVariant:  {}\n\nChanged settings:\n{}\nResults:\nVehicle position RMSE: {:.3} -> {:.3} m ({:+.3})\nVehicle heading RMSE:  {:.3} -> {:.3} rad ({:+.3})\nObject RMSE, estimated ego: {estimated_ego_tracks}\nObject RMSE, truth ego:     {truth_ego_tracks}\nEgo cost in object tracks:  {ego_cost}\n",
         baseline.display(),
         variant.display(),
         changes,
@@ -36,19 +48,28 @@ pub fn render(baseline: &Path, variant: &Path) -> Result<String> {
         baseline_metrics.ego.yaw_rmse_rad,
         variant_metrics.ego.yaw_rmse_rad,
         variant_metrics.ego.yaw_rmse_rad - baseline_metrics.ego.yaw_rmse_rad,
-        baseline_metrics.tracks_with_estimated_ego.position_rmse_m,
-        variant_metrics.tracks_with_estimated_ego.position_rmse_m,
-        variant_metrics.tracks_with_estimated_ego.position_rmse_m
-            - baseline_metrics.tracks_with_estimated_ego.position_rmse_m,
-        baseline_metrics.tracks_with_truth_ego.position_rmse_m,
-        variant_metrics.tracks_with_truth_ego.position_rmse_m,
-        variant_metrics.tracks_with_truth_ego.position_rmse_m
-            - baseline_metrics.tracks_with_truth_ego.position_rmse_m,
-        baseline_metrics.estimated_ego_position_rmse_delta_m,
-        variant_metrics.estimated_ego_position_rmse_delta_m,
-        variant_metrics.estimated_ego_position_rmse_delta_m
-            - baseline_metrics.estimated_ego_position_rmse_delta_m,
     ))
+}
+
+fn render_track_change(
+    baseline: &crate::eval::TrackMetrics,
+    variant: &crate::eval::TrackMetrics,
+) -> String {
+    render_optional_change(baseline.position_rmse_m, variant.position_rmse_m)
+}
+
+fn render_optional_change(baseline: Option<f64>, variant: Option<f64>) -> String {
+    match (baseline, variant) {
+        (Some(baseline), Some(variant)) => {
+            format!(
+                "{baseline:.3} -> {variant:.3} m ({:+.3})",
+                variant - baseline
+            )
+        }
+        (Some(baseline), None) => format!("{baseline:.3} m -> no track"),
+        (None, Some(variant)) => format!("no track -> {variant:.3} m"),
+        (None, None) => "no track".to_owned(),
+    }
 }
 
 fn collect_changes(
