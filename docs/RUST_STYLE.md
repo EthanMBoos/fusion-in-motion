@@ -4,6 +4,58 @@ Standard Rust conventions, `rustfmt`, and Clippy are the baseline. The rules
 below adapt that baseline so sensor and estimator code can be read in physical
 and algorithmic order by an engineer who is not a Rust specialist.
 
+The examples behind these rules come from good Rust code, but this repo is much
+smaller. Copy the pattern, not the machinery around it.
+
+## Rust choices
+
+Use structs and ordinary functions by default. Use an enum when the cases are
+known so `match` forces every case to be handled. A sensor kind, run status, or
+estimator mode should not be a string. Add a trait only when multiple
+implementations need the same interface. [ripgrep](https://github.com/BurntSushi/ripgrep)
+and [Serde](https://github.com/serde-rs/serde) show the difference between a
+closed enum and an interface meant for outside implementations.
+
+Rust often makes unclear ownership show up as a compiler error. Fix the
+ownership boundary instead of reaching for `.clone()`, `Arc`, or
+`Rc<RefCell<_>>`. In this batch pipeline, scenarios and histories are usually
+borrowed while an estimator or tracker owns its mutable state. See
+[Reqwest](https://github.com/seanmonstar/reqwest) for a larger example of
+ownership distinguishing reusable state from one-shot data.
+
+Use `pub` for an actual crate API, not to make a compiler error or integration
+test go away. Unit tests beside a module can test its private code. [fd](https://github.com/sharkdp/fd),
+[rust-analyzer](https://github.com/rust-lang/rust-analyzer), and
+[uutils](https://github.com/uutils/coreutils) keep most implementation modules
+private behind a small set of operations.
+
+## Parse into stronger types
+
+Serde types describe what can appear in a file. They do not prove that rates
+are positive, IDs are unique, or required combinations are present. Parse a
+`ScenarioConfig`, validate it, and construct a `ResolvedScenario` that cannot
+bypass those checks. This input-to-runtime boundary is used clearly by
+[fd](https://github.com/sharkdp/fd),
+[rust-analyzer](https://github.com/rust-lang/rust-analyzer), and
+[Serde](https://github.com/serde-rs/serde).
+
+Generated Protobuf fields may be `Option` even when the simulator requires
+them. Validate decoded CSV, MCAP, and future ROS data once, then pass the core a
+type whose timestamp and measurement are present. As in
+[Axum](https://github.com/tokio-rs/axum), missing input and invalid input are
+different results.
+
+Keep YAML strict with `deny_unknown_fields`. A Serde default means a field may
+intentionally be omitted, not that an old format still needs to work.
+
+Use `Result` for an operation that could not be completed. Use an enum or metric
+for an update that was applied, rejected, or numerically invalid. The command
+can use `anyhow`; it does not need a custom error framework. This split between
+operational failure and a completed result is visible in
+[Cargo](https://github.com/rust-lang/cargo),
+[Reqwest](https://github.com/seanmonstar/reqwest), and
+[uutils](https://github.com/uutils/coreutils).
+
 ## Optimize for an engineering review
 
 The most important code should make these questions easy to answer:
@@ -128,6 +180,12 @@ unit framework. Add stronger unit or frame wrapper types only where repeated
 mistakes show that naming and tests are insufficient.
 
 ## Tests express engineering invariants
+
+Put equation tests in the same module under `#[cfg(test)]` so private math does
+not become public for testing. Use integration tests for the public workflow.
+This is the same split used by
+[Cargo](https://github.com/rust-lang/cargo) and
+[ripgrep](https://github.com/BurntSushi/ripgrep).
 
 Equation changes should include the smallest applicable checks:
 
