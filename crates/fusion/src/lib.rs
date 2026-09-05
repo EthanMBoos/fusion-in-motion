@@ -175,18 +175,13 @@ pub fn score_tracks_csv(
         run.join(&relative).display()
     );
     let truth_path = run.join("truth.mcap");
-    let ego_label = if ego_source == EgoSource::Truth {
-        "truth"
-    } else {
-        "estimated"
-    };
     let metrics = eval::evaluate_tracks(
         &scenario,
         &bundle::read_ego_truth(&truth_path)?,
         &bundle::read_object_truth(&truth_path)?,
         &bundle::read_ego_estimates(&run.join("estimates/ego-baseline.mcap"))?,
         &tracks,
-        ego_label,
+        ego_source,
     );
     anyhow::ensure!(
         metrics.matched_samples > 0,

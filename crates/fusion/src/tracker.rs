@@ -10,10 +10,48 @@ use serde::{Deserialize, Serialize};
 
 use crate::{math, scenario::ObjectTrackerConfig};
 
-type TrackState = SVector<f64, 4>;
+type TrackVector = SVector<f64, 4>;
 type TrackCovariance = SMatrix<f64, 4, 4>;
 type LidarJacobian = SMatrix<f64, 2, 4>;
 type LidarCovariance = SMatrix<f64, 2, 2>;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TrackState {
+    position_world_m: Vector2<f64>,
+    velocity_world_mps: Vector2<f64>,
+}
+
+impl TrackState {
+    fn new(position_world_m: Vector2<f64>, velocity_world_mps: Vector2<f64>) -> Self {
+        Self {
+            position_world_m,
+            velocity_world_mps,
+        }
+    }
+
+    fn with_correction(mut self, correction: TrackVector) -> Self {
+        self.position_world_m.x += correction[TrackCoordinate::PositionX.index()];
+        self.position_world_m.y += correction[TrackCoordinate::PositionY.index()];
+        self.velocity_world_mps.x += correction[TrackCoordinate::VelocityX.index()];
+        self.velocity_world_mps.y += correction[TrackCoordinate::VelocityY.index()];
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+enum TrackCoordinate {
+    PositionX,
+    PositionY,
+    VelocityX,
+    VelocityY,
+}
+
+impl TrackCoordinate {
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum PerceptionMeasurement {
@@ -62,6 +100,15 @@ pub struct TrackerRun {
 pub enum EgoSource {
     Estimated,
     Truth,
+}
+
+impl EgoSource {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Estimated => "estimated",
+            Self::Truth => "truth",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -168,8 +215,15 @@ enum Detection {
     Lidar(LidarDetection),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SensorKind {
+    Camera,
+    Lidar,
+}
+
 #[derive(Debug, Clone)]
 struct DetectionBatch {
+    sensor: SensorKind,
     measurement_time_ns: i64,
     arrival_time_ns: i64,
     stable_id: String,
@@ -177,10 +231,6 @@ struct DetectionBatch {
 }
 
 impl DetectionBatch {
-    fn is_lidar(&self) -> bool {
-        self.stable_id.starts_with("lidar:")
-    }
-
     fn detection_time_ns(&self, detection: &Detection) -> i64 {
         match detection {
             Detection::Camera(_) => self.measurement_time_ns,
@@ -296,7 +346,7 @@ pub fn run(
             }
         }
 
-        if batch.is_lidar() {
+        if batch.sensor == SensorKind::Lidar {
             for track_id in &track_ids {
                 if !matched_tracks.contains(track_id) {
                     filters
@@ -436,6 +486,7 @@ fn flatten(measurements: &[PerceptionMeasurement]) -> Vec<DetectionBatch> {
             let time = measurement.time();
             match measurement {
                 PerceptionMeasurement::Camera(frame) => DetectionBatch {
+                    sensor: SensorKind::Camera,
                     measurement_time_ns: time.measurement_time_ns,
                     arrival_time_ns: time.arrival_time_ns,
                     stable_id: format!("camera:{record_index}"),
@@ -447,6 +498,7 @@ fn flatten(measurements: &[PerceptionMeasurement]) -> Vec<DetectionBatch> {
                         .collect(),
                 },
                 PerceptionMeasurement::Lidar(scan) => DetectionBatch {
+                    sensor: SensorKind::Lidar,
                     measurement_time_ns: scan
                         .detections
                         .iter()
@@ -559,14 +611,20 @@ fn initialize(detection: &LidarDetection, ego: EgoPose, time_ns: i64) -> Filter 
         + tangential_variance
         + ego_position_variance
         + ego_yaw_variance;
+    let position_x = TrackCoordinate::PositionX.index();
+    let position_y = TrackCoordinate::PositionY.index();
+    let velocity_x = TrackCoordinate::VelocityX.index();
+    let velocity_y = TrackCoordinate::VelocityY.index();
     Filter {
-        state: TrackState::new(position.x, position.y, 0.0, 0.0),
-        covariance: TrackCovariance::from_diagonal(&TrackState::new(
-            position_variance,
-            position_variance,
-            4.0,
-            4.0,
-        )),
+        state: TrackState::new(position, Vector2::zeros()),
+        covariance: {
+            let mut covariance = TrackCovariance::zeros();
+            covariance[(position_x, position_x)] = position_variance;
+            covariance[(position_y, position_y)] = position_variance;
+            covariance[(velocity_x, velocity_x)] = 4.0;
+            covariance[(velocity_y, velocity_y)] = 4.0;
+            covariance
+        },
         time_ns,
     }
 }
@@ -577,32 +635,30 @@ fn propagate(filter: &mut Filter, time_ns: i64, acceleration_noise_stddev_mps2: 
     if dt == 0.0 {
         return Ok(());
     }
-    let transition = TrackCovariance::new(
-        1.0, 0.0, dt, 0.0, 0.0, 1.0, 0.0, dt, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    );
+    let mut transition = TrackCovariance::identity();
+    transition[(
+        TrackCoordinate::PositionX.index(),
+        TrackCoordinate::VelocityX.index(),
+    )] = dt;
+    transition[(
+        TrackCoordinate::PositionY.index(),
+        TrackCoordinate::VelocityY.index(),
+    )] = dt;
     let q = acceleration_noise_stddev_mps2.powi(2);
     let dt2 = dt * dt;
     let dt3 = dt2 * dt;
     let dt4 = dt2 * dt2;
-    let process_noise = TrackCovariance::new(
-        0.25 * dt4 * q,
-        0.0,
-        0.5 * dt3 * q,
-        0.0,
-        0.0,
-        0.25 * dt4 * q,
-        0.0,
-        0.5 * dt3 * q,
-        0.5 * dt3 * q,
-        0.0,
-        dt2 * q,
-        0.0,
-        0.0,
-        0.5 * dt3 * q,
-        0.0,
-        dt2 * q,
-    );
-    filter.state = transition * filter.state;
+    let mut process_noise = TrackCovariance::zeros();
+    for (position, velocity) in [
+        (TrackCoordinate::PositionX, TrackCoordinate::VelocityX),
+        (TrackCoordinate::PositionY, TrackCoordinate::VelocityY),
+    ] {
+        process_noise[(position.index(), position.index())] = 0.25 * dt4 * q;
+        process_noise[(position.index(), velocity.index())] = 0.5 * dt3 * q;
+        process_noise[(velocity.index(), position.index())] = 0.5 * dt3 * q;
+        process_noise[(velocity.index(), velocity.index())] = dt2 * q;
+    }
+    filter.state.position_world_m += filter.state.velocity_world_mps * dt;
     filter.covariance = transition * filter.covariance * transition.transpose() + process_noise;
     filter.time_ns = time_ns;
     Ok(())
@@ -619,16 +675,16 @@ fn camera_innovation(
     filter: &Filter,
     detection: &CameraDetection,
     ego: EgoPose,
-) -> Option<(f64, TrackState, f64)> {
-    let displacement = Vector2::new(filter.state[0], filter.state[1]) - ego.position;
+) -> Option<(f64, TrackVector, f64)> {
+    let displacement = filter.state.position_world_m - ego.position;
     let range_squared = displacement.norm_squared();
     if range_squared <= 1.0e-12 {
         return None;
     }
     let predicted = math::wrap_angle(displacement.y.atan2(displacement.x) - ego.yaw);
-    let mut jacobian = TrackState::zeros();
-    jacobian[0] = -displacement.y / range_squared;
-    jacobian[1] = displacement.x / range_squared;
+    let mut jacobian = TrackVector::zeros();
+    jacobian[TrackCoordinate::PositionX.index()] = -displacement.y / range_squared;
+    jacobian[TrackCoordinate::PositionY.index()] = displacement.x / range_squared;
     let ego_jacobian = SVector::<f64, 3>::new(
         displacement.y / range_squared,
         -displacement.x / range_squared,
@@ -647,7 +703,7 @@ fn lidar_innovation(
     detection: &LidarDetection,
     ego: EgoPose,
 ) -> Option<(Vector2<f64>, LidarJacobian, LidarCovariance)> {
-    let displacement = Vector2::new(filter.state[0], filter.state[1]) - ego.position;
+    let displacement = filter.state.position_world_m - ego.position;
     let range_squared = displacement.norm_squared();
     let range = range_squared.sqrt();
     if range <= 1.0e-9 {
@@ -658,16 +714,11 @@ fn lidar_innovation(
         detection.range_m - range,
         math::wrap_angle(detection.bearing_rad - predicted_bearing),
     );
-    let jacobian = LidarJacobian::from_row_slice(&[
-        displacement.x / range,
-        displacement.y / range,
-        0.0,
-        0.0,
-        -displacement.y / range_squared,
-        displacement.x / range_squared,
-        0.0,
-        0.0,
-    ]);
+    let mut jacobian = LidarJacobian::zeros();
+    jacobian[(0, TrackCoordinate::PositionX.index())] = displacement.x / range;
+    jacobian[(0, TrackCoordinate::PositionY.index())] = displacement.y / range;
+    jacobian[(1, TrackCoordinate::PositionX.index())] = -displacement.y / range_squared;
+    jacobian[(1, TrackCoordinate::PositionY.index())] = displacement.x / range_squared;
     let ego_jacobian = SMatrix::<f64, 2, 3>::from_row_slice(&[
         -displacement.x / range,
         -displacement.y / range,
@@ -687,7 +738,7 @@ fn lidar_innovation(
 
 fn innovation_variance(
     filter: &Filter,
-    jacobian: TrackState,
+    jacobian: TrackVector,
     measurement_variance: f64,
 ) -> Option<f64> {
     if !measurement_variance.is_finite() || measurement_variance < 0.0 {
@@ -739,7 +790,7 @@ fn update_lidar(
         return TrackUpdate::Rejected;
     }
     let gain = filter.covariance * jacobian.transpose() * inverse;
-    let state = filter.state + gain * residual;
+    let state = filter.state.with_correction(gain * residual);
     let left = TrackCovariance::identity() - gain * jacobian;
     let covariance = left * filter.covariance * left.transpose()
         + gain * measurement_covariance * gain.transpose();
@@ -749,7 +800,7 @@ fn update_lidar(
 fn apply_track_scalar(
     filter: &mut Filter,
     residual: f64,
-    jacobian: TrackState,
+    jacobian: TrackVector,
     measurement_variance: f64,
     gate_sigma: f64,
 ) -> TrackUpdate {
@@ -763,7 +814,7 @@ fn apply_track_scalar(
         return TrackUpdate::Rejected;
     }
     let gain = filter.covariance * jacobian / variance;
-    let state = filter.state + gain * residual;
+    let state = filter.state.with_correction(gain * residual);
     let left = TrackCovariance::identity() - gain * jacobian.transpose();
     let covariance = left * filter.covariance * left.transpose()
         + gain * measurement_variance * gain.transpose();
@@ -776,7 +827,11 @@ fn commit_update(
     covariance: TrackCovariance,
 ) -> TrackUpdate {
     let covariance = 0.5 * (covariance + covariance.transpose());
-    if !state.iter().all(|value| value.is_finite())
+    if !state.position_world_m.iter().all(|value| value.is_finite())
+        || !state
+            .velocity_world_mps
+            .iter()
+            .all(|value| value.is_finite())
         || !covariance.iter().all(|value| value.is_finite())
         || covariance.clone_owned().cholesky().is_none()
     {
@@ -793,12 +848,12 @@ fn to_track(filter: &Filter, track_id: &str, available_time_ns: i64) -> ObjectTr
         estimate_time_ns: filter.time_ns,
         available_time_ns,
         position_world_m: Some(Vec2 {
-            x: filter.state[0],
-            y: filter.state[1],
+            x: filter.state.position_world_m.x,
+            y: filter.state.position_world_m.y,
         }),
         velocity_world_mps: Some(Vec2 {
-            x: filter.state[2],
-            y: filter.state[3],
+            x: filter.state.velocity_world_mps.x,
+            y: filter.state.velocity_world_mps.y,
         }),
         state_covariance: (0..4)
             .flat_map(|row| (0..4).map(move |column| filter.covariance[(row, column)]))
@@ -840,7 +895,10 @@ mod tests {
             },
             0,
         );
-        assert!((wrong.state[1] - correct.state[1] - 0.349).abs() < 0.002);
+        assert!(
+            (wrong.state.position_world_m.y - correct.state.position_world_m.y - 0.349).abs()
+                < 0.002
+        );
     }
 
     #[test]

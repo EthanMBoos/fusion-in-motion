@@ -5,7 +5,7 @@ use fusion_schema::messages::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{math, scenario::ResolvedScenario};
+use crate::{math, scenario::ResolvedScenario, tracker::EgoSource};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EgoMetrics {
@@ -65,7 +65,7 @@ pub fn evaluate(
         object_truth,
         estimates,
         estimated_ego_tracks,
-        "estimated",
+        EgoSource::Estimated,
     );
     let tracks_with_truth_ego = evaluate_tracks(
         scenario,
@@ -73,7 +73,7 @@ pub fn evaluate(
         object_truth,
         estimates,
         truth_ego_tracks,
-        "truth",
+        EgoSource::Truth,
     );
     RunMetrics {
         metric_version: "fusion-eval-3.0".to_owned(),
@@ -202,7 +202,7 @@ pub fn evaluate_tracks(
     object_truth: &[ObjectTruthState],
     ego_estimates: &[EgoStateEstimate],
     tracks: &[ObjectTrack],
-    ego_source: &str,
+    ego_source: EgoSource,
 ) -> TrackMetrics {
     let mut position_squared = 0.0;
     let mut velocity_squared = 0.0;
@@ -291,7 +291,7 @@ pub fn evaluate_tracks(
             .sqrt()
     });
     TrackMetrics {
-        ego_source: ego_source.to_owned(),
+        ego_source: ego_source.label().to_owned(),
         track_samples: tracks.len(),
         matched_samples: matched,
         track_count: objects.len(),
@@ -384,7 +384,7 @@ fn relative_position_error(
     object_truth: &ObjectTruthState,
     ego_truth: &[EgoTruthState],
     ego_estimates: &[EgoStateEstimate],
-    ego_source: &str,
+    ego_source: EgoSource,
     max_gap_ns: i64,
 ) -> Option<f64> {
     let track_position = track.position_world_m.as_ref()?;
@@ -392,17 +392,18 @@ fn relative_position_error(
     let truth_ego = nearest_ego_truth(ego_truth, track.estimate_time_ns, max_gap_ns)?;
     let truth_pose = truth_ego.pose_world.as_ref()?;
     let truth_ego_position = truth_pose.position.as_ref()?;
-    let (ego_x, ego_y, ego_yaw) = if ego_source == "truth" {
-        (
+    let (ego_x, ego_y, ego_yaw) = match ego_source {
+        EgoSource::Truth => (
             truth_ego_position.x,
             truth_ego_position.y,
             truth_pose.yaw_rad,
-        )
-    } else {
-        let estimate = nearest_estimate(ego_estimates, track.estimate_time_ns, max_gap_ns)?;
-        let pose = estimate.pose_world.as_ref()?;
-        let position = pose.position.as_ref()?;
-        (position.x, position.y, pose.yaw_rad)
+        ),
+        EgoSource::Estimated => {
+            let estimate = nearest_estimate(ego_estimates, track.estimate_time_ns, max_gap_ns)?;
+            let pose = estimate.pose_world.as_ref()?;
+            let position = pose.position.as_ref()?;
+            (position.x, position.y, pose.yaw_rad)
+        }
     };
     let estimated_relative =
         rotate_into_body(track_position.x - ego_x, track_position.y - ego_y, ego_yaw);
