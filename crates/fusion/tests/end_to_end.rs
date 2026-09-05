@@ -95,6 +95,35 @@ fn complete_run_writes_the_small_bundle() -> Result<()> {
     assert!(!run.join("manifest.json").exists());
     assert!(!bundle::read_ego_estimates(&run.join("estimates/ego-baseline.mcap"))?.is_empty());
     assert!(!bundle::read_tracks(&run.join("tracks/estimated-ego.mcap"))?.is_empty());
+    let summary = std::fs::read_to_string(run.join("reports/baseline/summary.md"))?;
+    assert!(summary.contains("GPS fixes accepted/rejected/invalid: 32/0/0"));
+    assert!(!summary.contains("## IMU bias"));
+    assert!(!summary.contains("## Vehicle timing"));
+    Ok(())
+}
+
+#[test]
+fn lesson_reports_show_the_result_and_changed_settings() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let bias_run = temp.path().join("bias");
+    let timing_run = temp.path().join("timing");
+    fusion_in_motion::run_experiment(&experiment("imu_bias.yaml"), &bias_run)?;
+    fusion_in_motion::run_experiment(&experiment("timing.yaml"), &timing_run)?;
+
+    let bias_summary = std::fs::read_to_string(bias_run.join("reports/baseline/summary.md"))?;
+    assert!(bias_summary.contains("## IMU bias"));
+    assert!(bias_summary.contains("Gyroscope bias RMSE"));
+    assert!(!bias_summary.contains("## Vehicle timing"));
+
+    let timing_summary = std::fs::read_to_string(timing_run.join("reports/baseline/summary.md"))?;
+    assert!(timing_summary.contains("## Vehicle timing"));
+    assert!(timing_summary.contains("Replayed measurements: 31"));
+    assert!(!timing_summary.contains("## IMU bias"));
+
+    let comparison = fusion_in_motion::compare::render(&bias_run, &timing_run)?;
+    assert!(comparison.contains("gps.latency_ns: 0 -> 120000000"));
+    assert!(comparison.contains("ego_estimator.timing_compensation: false -> true"));
+    assert!(comparison.find("Changed settings:") < comparison.find("Results:"));
     Ok(())
 }
 

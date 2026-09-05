@@ -52,15 +52,20 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
+    let run_name = run
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("run");
     let rec = rerun::RecordingStreamBuilder::new("fusion_in_motion")
+        .recording_name(run_name)
         .save(output)
         .with_context(|| format!("failed to create {}", output.display()))?;
 
     rec.log_static(
         "dashboard/guide",
-        &rerun::TextDocument::new(
-            "# Fusion in Motion\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nCamera: cyan direction only. Lidar: blue range and direction.",
-        ),
+        &rerun::TextDocument::new(format!(
+            "# Fusion in Motion — {run_name}\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nCamera: cyan direction only. Lidar: blue range and direction."
+        )),
     )?;
     log_styles(&rec)?;
     log_paths(

@@ -233,7 +233,7 @@ pub fn write_reports(
         report_dir.join("metrics.json"),
         serde_json::to_vec_pretty(&json)?,
     )?;
-    let summary = format!(
+    let mut summary = format!(
         "# Run result\n\n\
          GPS and IMU estimate the vehicle. Camera and lidar track objects.\n\n\
          ## Vehicle\n\n\
@@ -257,6 +257,43 @@ pub fn write_reports(
         tracker_estimated_diagnostics.confirmed_tracks,
         tracker_estimated_diagnostics.deleted_tracks,
     );
+    if let (Some(gyro_rmse), Some(accel_rmse), Some(gyro_coverage), Some(accel_coverage)) = (
+        metrics.ego.gyro_bias_rmse_radps,
+        metrics.ego.accel_bias_rmse_mps2,
+        metrics.ego.gyro_bias_95pct_coverage,
+        metrics.ego.accel_bias_95pct_coverage,
+    ) {
+        summary.push_str(&format!(
+            "\n## IMU bias\n\n\
+             Gyroscope bias RMSE: {gyro_rmse:.6} rad/s  \n\
+             True gyroscope bias inside the 95% range: {:.1}%  \n\
+             Accelerometer bias RMSE: {accel_rmse:.6} m/s²  \n\
+             True accelerometer bias inside the 95% range: {:.1}%\n",
+            gyro_coverage * 100.0,
+            accel_coverage * 100.0,
+        ));
+    }
+    if ego_timing.timing_compensation || ego_timing.maximum_delivery_age_ns > 0 {
+        summary.push_str(&format!(
+            "\n## Vehicle timing\n\n\
+             Timing compensation: {}  \n\
+             Delayed measurements: {}  \n\
+             Replayed measurements: {}  \n\
+             Revised estimates: {}  \n\
+             Discarded measurements: {}  \n\
+             Maximum arrival delay: {:.1} ms\n",
+            if ego_timing.timing_compensation {
+                "on"
+            } else {
+                "off"
+            },
+            ego_timing.delayed_measurements,
+            ego_timing.replayed_measurements,
+            ego_timing.revised_estimates,
+            ego_timing.discarded_measurements,
+            ego_timing.maximum_delivery_age_ns as f64 / 1_000_000.0,
+        ));
+    }
     fs::write(report_dir.join("summary.md"), summary)?;
     Ok(())
 }
