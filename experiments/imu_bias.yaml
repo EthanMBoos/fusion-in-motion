@@ -35,5 +35,8 @@ imu:
   accel_bias_random_walk_mps2_sqrt_s: 0.0005
 
 ego_estimator:
-  # Turn this off to see the result when the filter does not estimate IMU bias.
-  estimate_imu_bias: true
+  # Change this to basic to compare against an EKF that assumes the IMU is correct.
+  algorithm: imu_bias
+  # The filter starts unsure about how wrong each sensor is.
+  initial_gyro_bias_stddev_radps: 0.01
+  initial_accel_bias_stddev_mps2: 0.1

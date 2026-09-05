@@ -188,10 +188,18 @@ impl Default for LidarConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EgoEstimatorAlgorithm {
+    #[default]
+    Basic,
+    ImuBias,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EgoEstimatorConfig {
-    pub estimate_imu_bias: bool,
+    pub algorithm: EgoEstimatorAlgorithm,
     pub timing_compensation: bool,
     pub history_duration_ns: i64,
     pub gps_gate_sigma: f64,
@@ -205,7 +213,7 @@ pub struct EgoEstimatorConfig {
 impl Default for EgoEstimatorConfig {
     fn default() -> Self {
         Self {
-            estimate_imu_bias: false,
+            algorithm: EgoEstimatorAlgorithm::Basic,
             timing_compensation: false,
             history_duration_ns: 1_000_000_000,
             gps_gate_sigma: 1.0e9,

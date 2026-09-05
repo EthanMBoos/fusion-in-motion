@@ -752,7 +752,7 @@ fn send_blueprint(
             .with_origin("plots/detections")
             .into(),
     ];
-    if scenario.ego_estimator.estimate_imu_bias {
+    if scenario.ego_estimator.algorithm == crate::scenario::EgoEstimatorAlgorithm::ImuBias {
         plot_views.push(
             TimeSeriesView::new("Gyro bias")
                 .with_origin("plots/bias/gyro")

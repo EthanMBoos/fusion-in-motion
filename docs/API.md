@@ -25,13 +25,14 @@ completed GPS/IMU run in measurement-time order. This is an offline reference,
 not an online rewind/replay filter. Each lidar detection has its own measurement
 time because one scan can collect returns at different times.
 
-The starter vehicle covariance is a row-major 4×4 matrix ordered as:
+`ego_estimator.algorithm` selects `basic` or `imu_bias`. The basic EKF assumes
+the IMU is correct and uses a row-major 4×4 covariance ordered as:
 
 ```text
 x, y, yaw, forward speed
 ```
 
-The bias experiment adds gyro and accelerometer bias, producing a 6×6 matrix:
+The bias-aware EKF estimates gyro and accelerometer bias and uses a 6×6 matrix:
 
 ```text
 x, y, yaw, forward speed, gyro bias, accelerometer bias

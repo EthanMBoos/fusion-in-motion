@@ -378,18 +378,35 @@ fn planar_detection_round_trips() -> Result<()> {
 #[test]
 fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     let starter = scenario::load_and_resolve(&starter_experiment())?;
-    assert!(!starter.ego_estimator.estimate_imu_bias);
+    assert_eq!(
+        starter.ego_estimator.algorithm,
+        scenario::EgoEstimatorAlgorithm::Basic
+    );
     assert!(!starter.ego_estimator.timing_compensation);
     assert_eq!(starter.gps.outlier_probability, 0.0);
+    let generated = sensor::generate(&starter)?;
+    let (measurements, _) = split(&generated.measurements);
+    let run = estimator::run_baseline(&starter.ego_estimator, &starter.imu, &measurements)?;
+    assert!(run.estimates.iter().all(|estimate| {
+        estimate.state_covariance.len() == 16
+            && estimate.gyro_bias_z_radps.is_none()
+            && estimate.accel_bias_x_mps2.is_none()
+    }));
 
     let bias = scenario::load_and_resolve(&experiment("imu_bias.yaml"))?;
+    assert_eq!(
+        bias.ego_estimator.algorithm,
+        scenario::EgoEstimatorAlgorithm::ImuBias
+    );
     let generated = sensor::generate(&bias)?;
     let (measurements, _) = split(&generated.measurements);
     let run = estimator::run_baseline(&bias.ego_estimator, &bias.imu, &measurements)?;
     assert!(
         run.estimates
             .iter()
-            .all(|estimate| estimate.gyro_bias_z_radps.is_some())
+            .all(|estimate| estimate.state_covariance.len() == 36
+                && estimate.gyro_bias_z_radps.is_some()
+                && estimate.accel_bias_x_mps2.is_some())
     );
 
     let timing = scenario::load_and_resolve(&experiment("timing.yaml"))?;

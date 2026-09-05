@@ -16,11 +16,11 @@
     "imu_bias": {
       "metrics": {
         "ego": {
-          "position_rmse_m": 0.2702076502823106,
-          "gyro_bias_rmse_radps": 0.010745790770856902,
-          "accel_bias_rmse_mps2": 0.11440810282111859,
+          "position_rmse_m": 0.23191230052454034,
+          "gyro_bias_rmse_radps": 0.003212781461224656,
+          "accel_bias_rmse_mps2": 0.030848763103150812,
           "gyro_bias_95pct_coverage": 1.0,
-          "accel_bias_95pct_coverage": 0.909375
+          "accel_bias_95pct_coverage": 0.90875
         }
       }
     },

@@ -356,6 +356,37 @@ fn check_outlier_lesson(runs: &BTreeMap<String, CompletedRun>, temp: &Path) -> R
     Ok(())
 }
 
+fn check_bias_lesson(runs: &BTreeMap<String, CompletedRun>, temp: &Path) -> Result<()> {
+    let bias_aware = &runs["imu_bias"].report.metrics.ego;
+    ensure!(
+        bias_aware.gyro_bias_rmse_radps.is_some()
+            && bias_aware.accel_bias_rmse_mps2.is_some()
+            && bias_aware.gyro_bias_95pct_coverage.is_some()
+            && bias_aware.accel_bias_95pct_coverage.is_some(),
+        "imu_bias.yaml no longer evaluates the estimated IMU biases"
+    );
+
+    let mut scenario =
+        scenario::load_and_resolve(&repository_root().join("experiments/imu_bias.yaml"))?;
+    scenario.ego_estimator.algorithm = scenario::EgoEstimatorAlgorithm::Basic;
+    let basic = run_variant("imu-bias-basic-ekf", &scenario, temp)?;
+    let basic = &basic.report.metrics.ego;
+    ensure!(
+        basic.gyro_bias_rmse_radps.is_none()
+            && basic.accel_bias_rmse_mps2.is_none()
+            && basic.gyro_bias_95pct_coverage.is_none()
+            && basic.accel_bias_95pct_coverage.is_none(),
+        "the basic EKF unexpectedly reported IMU bias estimates"
+    );
+    ensure!(
+        bias_aware.position_rmse_m < basic.position_rmse_m,
+        "the bias-aware EKF no longer improves position RMSE for imu_bias.yaml: {:.3} m bias-aware, {:.3} m basic",
+        bias_aware.position_rmse_m,
+        basic.position_rmse_m
+    );
+    Ok(())
+}
+
 fn check_timing_lesson(runs: &BTreeMap<String, CompletedRun>, temp: &Path) -> Result<()> {
     let compensated = &runs["timing"].report;
     ensure!(
@@ -513,6 +544,7 @@ fn checked_in_experiments_keep_their_results() -> Result<()> {
     );
 
     check_initial_lesson(&runs["initial"].report)?;
+    check_bias_lesson(&runs, temp.path())?;
     check_outlier_lesson(&runs, temp.path())?;
     check_timing_lesson(&runs, temp.path())?;
 

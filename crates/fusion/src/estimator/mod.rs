@@ -1,22 +1,20 @@
-mod gps;
-mod observation;
-mod propagation;
-pub mod state;
+mod basic;
+mod imu_bias;
 
 use anyhow::{Result, ensure};
 use fusion_schema::messages::{EgoStateEstimate, GpsFix, ImuSample, MeasurementTime};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    math,
-    scenario::{EgoEstimatorConfig, ImuConfig},
-};
+use crate::scenario::{EgoEstimatorAlgorithm, EgoEstimatorConfig, ImuConfig};
 
-use self::{
-    observation::UpdateResult,
-    propagation::ImuProcessNoise,
-    state::{PlanarState, StateCovariance},
-};
+use self::{basic::BasicEkf, imu_bias::ImuBiasEkf};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UpdateResult {
+    Applied { normalized_residual: f64 },
+    Rejected { normalized_residual: f64 },
+    Invalid,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EgoMeasurement {
@@ -44,7 +42,7 @@ pub struct GpsDiagnostics {
 }
 
 impl GpsDiagnostics {
-    pub fn record(&mut self, result: UpdateResult) {
+    fn record(&mut self, result: UpdateResult) {
         self.attempted_fixes += 1;
         match result {
             UpdateResult::Applied {
@@ -80,6 +78,7 @@ pub struct TimingDiagnostics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineAssumptions {
+    pub algorithm: EgoEstimatorAlgorithm,
     pub state_order: Vec<String>,
     pub initial_covariance_diagonal: Vec<f64>,
     pub imu_process_noise: ImuProcessNoise,
@@ -100,22 +99,12 @@ pub fn run_baseline(
     measurements: &[EgoMeasurement],
 ) -> Result<EstimatorRun> {
     validate_delivery_order(measurements)?;
-    let initial_covariance = state::initial_covariance(config);
-    let assumptions = BaselineAssumptions {
-        state_order: state::STATE_NAMES[..if config.estimate_imu_bias { 6 } else { 4 }]
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect(),
-        initial_covariance_diagonal: (0..if config.estimate_imu_bias { 6 } else { 4 })
-            .map(|index| initial_covariance[(index, index)])
-            .collect(),
-        imu_process_noise: ImuProcessNoise::from(imu),
-        gps_gate_sigma: config.gps_gate_sigma,
-    };
+    let filter = ActiveEkf::new(config);
+    let assumptions = filter.assumptions(config, imu);
     if config.timing_compensation {
-        run_at_measurement_time(config, measurements, assumptions)
+        run_at_measurement_time(config, measurements, assumptions, filter)
     } else {
-        run_at_arrival(config, measurements, assumptions)
+        run_at_arrival(config, measurements, assumptions, filter)
     }
 }
 
@@ -123,8 +112,8 @@ fn run_at_arrival(
     config: &EgoEstimatorConfig,
     measurements: &[EgoMeasurement],
     assumptions: BaselineAssumptions,
+    mut filter: ActiveEkf,
 ) -> Result<EstimatorRun> {
-    let mut filter = BaselineEkf::new(config);
     let mut gps_diagnostics = GpsDiagnostics::default();
     let mut estimates = Vec::new();
     let mut latest_imu_stamp_ns = None;
@@ -138,18 +127,9 @@ fn run_at_arrival(
             EgoMeasurement::Imu(imu) => {
                 filter.propagate(imu, &assumptions.imu_process_noise)?;
                 latest_imu_stamp_ns = Some(time.measurement_time_ns);
-                estimates.push(filter.estimate(
-                    config,
-                    time.measurement_time_ns,
-                    time.arrival_time_ns,
-                ));
+                estimates.push(filter.estimate(time.measurement_time_ns, time.arrival_time_ns));
             }
-            EgoMeasurement::Gps(fix) => gps_diagnostics.record(gps::update(
-                &mut filter.state,
-                &mut filter.covariance,
-                config,
-                fix,
-            )?),
+            EgoMeasurement::Gps(fix) => gps_diagnostics.record(filter.update_gps(config, fix)?),
         }
     }
     Ok(EstimatorRun {
@@ -164,6 +144,7 @@ fn run_at_measurement_time(
     config: &EgoEstimatorConfig,
     measurements: &[EgoMeasurement],
     assumptions: BaselineAssumptions,
+    mut filter: ActiveEkf,
 ) -> Result<EstimatorRun> {
     let mut accepted = Vec::new();
     let mut latest_imu_stamp_ns = None;
@@ -202,7 +183,6 @@ fn run_at_measurement_time(
         )
     });
 
-    let mut filter = BaselineEkf::new(config);
     let mut gps_diagnostics = GpsDiagnostics::default();
     let mut estimates = Vec::new();
     let mut revised = 0;
@@ -219,12 +199,7 @@ fn run_at_measurement_time(
                     filter.propagate(imu, &assumptions.imu_process_noise)?;
                     emission = Some(measurement.time().arrival_time_ns);
                 }
-                EgoMeasurement::Gps(fix) => gps_diagnostics.record(gps::update(
-                    &mut filter.state,
-                    &mut filter.covariance,
-                    config,
-                    fix,
-                )?),
+                EgoMeasurement::Gps(fix) => gps_diagnostics.record(filter.update_gps(config, fix)?),
             }
         }
         if let Some(initial_emission) = emission {
@@ -241,7 +216,7 @@ fn run_at_measurement_time(
                 }
             }
             revised += usize::from(was_revised);
-            estimates.push(filter.estimate(config, stamp, final_emission));
+            estimates.push(filter.estimate(stamp, final_emission));
         }
         index = end;
     }
@@ -303,59 +278,79 @@ fn validate_delivery_order(measurements: &[EgoMeasurement]) -> Result<()> {
     Ok(())
 }
 
-struct BaselineEkf {
-    state: PlanarState,
-    covariance: StateCovariance,
-    last_imu_stamp_ns: Option<i64>,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ImuProcessNoise {
+    pub gyro_white_noise_density_radps_sqrt_hz: f64,
+    pub accel_white_noise_density_mps2_sqrt_hz: f64,
+    pub gyro_bias_random_walk_radps_sqrt_s: f64,
+    pub accel_bias_random_walk_mps2_sqrt_s: f64,
 }
 
-impl BaselineEkf {
-    fn new(config: &EgoEstimatorConfig) -> Self {
+impl ImuProcessNoise {
+    fn for_algorithm(config: &ImuConfig, algorithm: EgoEstimatorAlgorithm) -> Self {
+        let estimates_bias = algorithm == EgoEstimatorAlgorithm::ImuBias;
         Self {
-            state: PlanarState::default(),
-            covariance: state::initial_covariance(config),
-            last_imu_stamp_ns: None,
+            gyro_white_noise_density_radps_sqrt_hz: config.gyro_white_noise_density_radps_sqrt_hz,
+            accel_white_noise_density_mps2_sqrt_hz: config.accel_white_noise_density_mps2_sqrt_hz,
+            gyro_bias_random_walk_radps_sqrt_s: if estimates_bias {
+                config.gyro_bias_random_walk_radps_sqrt_s
+            } else {
+                0.0
+            },
+            accel_bias_random_walk_mps2_sqrt_s: if estimates_bias {
+                config.accel_bias_random_walk_mps2_sqrt_s
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
+enum ActiveEkf {
+    Basic(BasicEkf),
+    ImuBias(ImuBiasEkf),
+}
+
+impl ActiveEkf {
+    fn new(config: &EgoEstimatorConfig) -> Self {
+        match config.algorithm {
+            EgoEstimatorAlgorithm::Basic => Self::Basic(BasicEkf::new(config)),
+            EgoEstimatorAlgorithm::ImuBias => Self::ImuBias(ImuBiasEkf::new(config)),
+        }
+    }
+
+    fn assumptions(&self, config: &EgoEstimatorConfig, imu: &ImuConfig) -> BaselineAssumptions {
+        let (state_names, initial_covariance_diagonal): (&[&str], Vec<f64>) = match self {
+            Self::Basic(filter) => (&basic::STATE_NAMES, filter.covariance_diagonal()),
+            Self::ImuBias(filter) => (&imu_bias::STATE_NAMES, filter.covariance_diagonal()),
+        };
+        BaselineAssumptions {
+            algorithm: config.algorithm,
+            state_order: state_names.iter().map(|name| (*name).to_owned()).collect(),
+            initial_covariance_diagonal,
+            imu_process_noise: ImuProcessNoise::for_algorithm(imu, config.algorithm),
+            gps_gate_sigma: config.gps_gate_sigma,
         }
     }
 
     fn propagate(&mut self, imu: &ImuSample, noise: &ImuProcessNoise) -> Result<()> {
-        propagation::propagate_imu(
-            &mut self.state,
-            &mut self.covariance,
-            &mut self.last_imu_stamp_ns,
-            imu,
-            noise,
-        )
+        match self {
+            Self::Basic(filter) => filter.propagate(imu, noise),
+            Self::ImuBias(filter) => filter.propagate(imu, noise),
+        }
     }
 
-    fn estimate(
-        &self,
-        config: &EgoEstimatorConfig,
-        estimate_time_ns: i64,
-        available_time_ns: i64,
-    ) -> EgoStateEstimate {
-        let yaw = self.state.yaw_world_from_body_rad;
-        EgoStateEstimate {
-            estimate_time_ns,
-            available_time_ns,
-            pose_world: Some(math::pose2(
-                self.state.position_world_m.x,
-                self.state.position_world_m.y,
-                yaw,
-            )),
-            forward_speed_mps: self.state.forward_speed_mps,
-            state_covariance: (0..if config.estimate_imu_bias { 6 } else { 4 })
-                .flat_map(|row| {
-                    (0..if config.estimate_imu_bias { 6 } else { 4 })
-                        .map(move |column| self.covariance[(row, column)])
-                })
-                .collect(),
-            gyro_bias_z_radps: config
-                .estimate_imu_bias
-                .then_some(self.state.gyro_bias_radps),
-            accel_bias_x_mps2: config
-                .estimate_imu_bias
-                .then_some(self.state.accel_bias_mps2),
+    fn update_gps(&mut self, config: &EgoEstimatorConfig, fix: &GpsFix) -> Result<UpdateResult> {
+        match self {
+            Self::Basic(filter) => filter.update_gps(config, fix),
+            Self::ImuBias(filter) => filter.update_gps(config, fix),
+        }
+    }
+
+    fn estimate(&self, estimate_time_ns: i64, available_time_ns: i64) -> EgoStateEstimate {
+        match self {
+            Self::Basic(filter) => filter.estimate(estimate_time_ns, available_time_ns),
+            Self::ImuBias(filter) => filter.estimate(estimate_time_ns, available_time_ns),
         }
     }
 }
