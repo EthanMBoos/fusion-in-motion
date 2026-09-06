@@ -37,6 +37,132 @@ fn split(records: &[MeasurementRecord]) -> (Vec<EgoMeasurement>, Vec<PerceptionM
     (ego, perception)
 }
 
+fn hand_check_scenario() -> Result<scenario::ResolvedScenario> {
+    let mut scenario = scenario::load_and_resolve(&starter_experiment())?;
+    scenario.root_seed = 1;
+    scenario.world.objects = vec![scenario::ObjectConfig {
+        id: "object".to_owned(),
+        initial_position_m: scenario::Vec2Config { x: 3.0, y: 4.0 },
+        velocity_world_mps: scenario::Vec2Config::default(),
+    }];
+    scenario.trajectory = vec![scenario::MotionSegment {
+        id: "stationary".to_owned(),
+        duration_s: 1.0,
+        longitudinal_acceleration_mps2: 0.0,
+        yaw_rate_radps: 0.0,
+    }];
+    scenario.camera.horizontal_fov_rad = std::f64::consts::TAU;
+    scenario.camera.max_range_m = 10.0;
+    scenario.camera.bearing_noise_stddev_rad = 0.0;
+    scenario.camera.detection_probability = 1.0;
+    scenario.lidar.horizontal_fov_rad = std::f64::consts::TAU;
+    scenario.lidar.max_range_m = 10.0;
+    scenario.lidar.scan_duration_ns = 0;
+    scenario.lidar.range_noise_stddev_m = 0.0;
+    scenario.lidar.bearing_noise_stddev_rad = 0.0;
+    scenario.lidar.detection_probability = 1.0;
+    Ok(scenario)
+}
+
+#[test]
+fn noiseless_camera_and_lidar_measure_known_geometry() -> Result<()> {
+    let mut scenario = hand_check_scenario()?;
+    scenario.camera.rate_hz = 1.0;
+    scenario.lidar.rate_hz = 1.0;
+    scenario::validate(&scenario)?;
+
+    let generated = sensor::generate(&scenario)?;
+    let camera = generated
+        .measurements
+        .iter()
+        .find_map(|record| match record {
+            MeasurementRecord::Camera(frame) => Some(frame),
+            _ => None,
+        })
+        .unwrap();
+    let lidar = generated
+        .measurements
+        .iter()
+        .find_map(|record| match record {
+            MeasurementRecord::Lidar(scan) => Some(scan),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_eq!(camera.detections.len(), 1);
+    assert_eq!(lidar.detections.len(), 1);
+    let expected_bearing = 4.0_f64.atan2(3.0);
+    let camera_bearing = camera.detections[0].bearing_rad;
+    let lidar_bearing = lidar.detections[0].bearing_rad;
+    let lidar_range = lidar.detections[0].range_m;
+    assert!(
+        (camera_bearing - expected_bearing).abs() < 1.0e-12,
+        "camera bearing: expected {expected_bearing}, got {camera_bearing}"
+    );
+    assert!(
+        (lidar_bearing - expected_bearing).abs() < 1.0e-12,
+        "lidar bearing: expected {expected_bearing}, got {lidar_bearing}"
+    );
+    assert!(
+        (lidar_range - 5.0).abs() < 1.0e-12,
+        "lidar range: expected 5, got {lidar_range}"
+    );
+    Ok(())
+}
+
+#[test]
+fn configured_rates_and_delays_set_exact_measurement_times() -> Result<()> {
+    let mut scenario = hand_check_scenario()?;
+    scenario.imu.rate_hz = 4.0;
+    scenario.imu.latency_ns = 10_000_000;
+    scenario.imu.gyro_white_noise_density_radps_sqrt_hz = 0.0;
+    scenario.imu.accel_white_noise_density_mps2_sqrt_hz = 0.0;
+    scenario.gps.rate_hz = 2.0;
+    scenario.gps.latency_ns = 20_000_000;
+    scenario.gps.horizontal_position_stddev_m = 0.0;
+    scenario.camera.rate_hz = 2.0;
+    scenario.camera.latency_ns = 30_000_000;
+    scenario.lidar.rate_hz = 1.0;
+    scenario.lidar.latency_ns = 40_000_000;
+    scenario::validate(&scenario)?;
+
+    let generated = sensor::generate(&scenario)?;
+    let mut imu = Vec::new();
+    let mut gps = Vec::new();
+    let mut camera = Vec::new();
+    let mut lidar = Vec::new();
+    for record in &generated.measurements {
+        let time = record.time();
+        let pair = (time.measurement_time_ns, time.arrival_time_ns);
+        match record {
+            MeasurementRecord::Imu(_) => imu.push(pair),
+            MeasurementRecord::Gps(_) => gps.push(pair),
+            MeasurementRecord::Camera(_) => camera.push(pair),
+            MeasurementRecord::Lidar(_) => lidar.push(pair),
+        }
+    }
+
+    assert_eq!(
+        imu,
+        vec![
+            (250_000_000, 260_000_000),
+            (500_000_000, 510_000_000),
+            (750_000_000, 760_000_000),
+            (1_000_000_000, 1_010_000_000),
+        ]
+    );
+    assert_eq!(
+        gps,
+        vec![(500_000_000, 520_000_000), (1_000_000_000, 1_020_000_000),]
+    );
+    assert_eq!(
+        camera,
+        vec![(500_000_000, 530_000_000), (1_000_000_000, 1_030_000_000),]
+    );
+    assert_eq!(lidar, vec![(1_000_000_000, 1_040_000_000)]);
+    Ok(())
+}
+
 #[test]
 fn generation_is_repeatable_and_contains_all_four_sensors() -> Result<()> {
     let scenario = scenario::load_and_resolve(&starter_experiment())?;
@@ -129,20 +255,45 @@ fn lesson_reports_show_the_result_and_changed_settings() -> Result<()> {
 }
 
 #[test]
-fn perception_settings_cannot_change_ego_estimates() -> Result<()> {
+fn sensor_randomness_is_independent_and_perception_cannot_change_ego() -> Result<()> {
     let scenario = scenario::load_and_resolve(&starter_experiment())?;
     let baseline = sensor::generate(&scenario)?;
-    let mut changed = scenario.clone();
-    changed.camera.bearing_noise_stddev_rad *= 20.0;
-    changed.lidar.range_noise_stddev_m *= 20.0;
-    changed.lidar.detection_probability = 0.1;
-    let changed = sensor::generate(&changed)?;
-    let (baseline_ego, _) = split(&baseline.measurements);
-    let (changed_ego, _) = split(&changed.measurements);
+    let (baseline_ego, baseline_perception) = split(&baseline.measurements);
+    let lidar_scans = |measurements: &[PerceptionMeasurement]| {
+        measurements
+            .iter()
+            .filter_map(|record| match record {
+                PerceptionMeasurement::Lidar(scan) => Some(scan.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut changed_camera_scenario = scenario.clone();
+    changed_camera_scenario.camera.rate_hz = 8.0;
+    changed_camera_scenario.camera.bearing_noise_stddev_rad *= 20.0;
+    changed_camera_scenario.camera.detection_probability = 0.1;
+    let changed_camera = sensor::generate(&changed_camera_scenario)?;
+    let (_, camera_perception) = split(&changed_camera.measurements);
+    assert_eq!(
+        lidar_scans(&baseline_perception),
+        lidar_scans(&camera_perception)
+    );
+
+    let mut changed_perception = changed_camera_scenario;
+    changed_perception.lidar.rate_hz = 4.0;
+    changed_perception.lidar.range_noise_stddev_m *= 20.0;
+    changed_perception.lidar.bearing_noise_stddev_rad *= 20.0;
+    changed_perception.lidar.detection_probability = 0.1;
+    let changed_perception = sensor::generate(&changed_perception)?;
+    let (changed_ego, _) = split(&changed_perception.measurements);
     assert_eq!(baseline_ego, changed_ego);
-    let first = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &baseline_ego)?;
-    let second = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &changed_ego)?;
-    assert_eq!(first.estimates, second.estimates);
+
+    let baseline_run =
+        estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &baseline_ego)?;
+    let changed_run =
+        estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &changed_ego)?;
+    assert_eq!(baseline_run.estimates, changed_run.estimates);
     Ok(())
 }
 
