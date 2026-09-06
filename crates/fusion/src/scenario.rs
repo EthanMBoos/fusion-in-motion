@@ -234,7 +234,7 @@ pub struct ObjectTrackerConfig {
     pub acceleration_noise_stddev_mps2: f64,
     pub gate_sigma: f64,
     pub confirmation_hits: usize,
-    pub max_missed_lidar_scans: usize,
+    pub max_time_without_update_s: f64,
 }
 
 impl Default for ObjectTrackerConfig {
@@ -245,7 +245,7 @@ impl Default for ObjectTrackerConfig {
             acceleration_noise_stddev_mps2: 0.5,
             gate_sigma: 4.0,
             confirmation_hits: 2,
-            max_missed_lidar_scans: 3,
+            max_time_without_update_s: 1.0,
         }
     }
 }
@@ -254,6 +254,7 @@ impl Default for ObjectTrackerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct MetricsConfig {
     pub max_truth_match_gap_ns: i64,
+    pub track_truth_match_max_distance_m: f64,
     pub ego_divergence_position_error_m: f64,
     pub track_divergence_position_error_m: f64,
 }
@@ -262,6 +263,7 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             max_truth_match_gap_ns: 10_000_000,
+            track_truth_match_max_distance_m: 5.0,
             ego_divergence_position_error_m: 5.0,
             track_divergence_position_error_m: 5.0,
         }
@@ -489,6 +491,14 @@ fn validate_estimators(scenario: &ResolvedScenario) -> Result<()> {
             scenario.object_tracker.acceleration_noise_stddev_mps2,
         ),
         ("tracker gate", scenario.object_tracker.gate_sigma),
+        (
+            "tracker maximum time without an update",
+            scenario.object_tracker.max_time_without_update_s,
+        ),
+        (
+            "track truth match distance",
+            scenario.metrics.track_truth_match_max_distance_m,
+        ),
     ] {
         ensure!(
             value.is_finite() && value > 0.0,
@@ -500,9 +510,8 @@ fn validate_estimators(scenario: &ResolvedScenario) -> Result<()> {
         "truth match gap must be nonnegative"
     );
     ensure!(
-        scenario.object_tracker.confirmation_hits > 0
-            && scenario.object_tracker.max_missed_lidar_scans > 0,
-        "tracker confirmation hits and missed lidar scans must be positive"
+        scenario.object_tracker.confirmation_hits > 0,
+        "tracker confirmation hits must be positive"
     );
     ensure!(
         scenario.metrics.ego_divergence_position_error_m > 0.0

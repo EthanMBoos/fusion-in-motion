@@ -7,6 +7,7 @@ use fusion_in_motion::{
     scenario, sensor, sweep,
     tracker::{self, EgoHistory, EgoSource, PerceptionMeasurement},
 };
+use fusion_schema::messages::{ObjectTrack, ObjectTrackFrame, Vec2};
 use prost::Message;
 
 fn starter_experiment() -> PathBuf {
@@ -214,6 +215,8 @@ fn complete_run_writes_the_small_bundle() -> Result<()> {
         "tracks/truth-ego.mcap",
         "reports/baseline/metrics.json",
         "reports/baseline/summary.md",
+        "reports/baseline/tracker-history-estimated-ego.json",
+        "reports/baseline/tracker-history-truth-ego.json",
         "reports/baseline/visualization.rrd",
     ] {
         assert!(run.join(relative).is_file(), "missing {relative}");
@@ -225,6 +228,32 @@ fn complete_run_writes_the_small_bundle() -> Result<()> {
     assert!(summary.contains("GPS fixes accepted/rejected/invalid: 32/0/0"));
     assert!(!summary.contains("## IMU bias"));
     assert!(!summary.contains("## Vehicle timing"));
+    Ok(())
+}
+
+#[test]
+fn empty_and_same_time_track_frames_round_trip_in_order() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("tracks.mcap");
+    let frames = vec![
+        ObjectTrackFrame {
+            estimate_time_ns: 1_000,
+            available_time_ns: 2_000,
+            tracks: Vec::new(),
+        },
+        ObjectTrackFrame {
+            estimate_time_ns: 1_000,
+            available_time_ns: 2_000,
+            tracks: vec![ObjectTrack {
+                track_id: "track-001".to_owned(),
+                position_world_m: Some(Vec2 { x: 1.0, y: 2.0 }),
+                velocity_world_mps: Some(Vec2 { x: 0.0, y: 0.0 }),
+                state_covariance: vec![0.0; 16],
+            }],
+        },
+    ];
+    bundle::write_tracks_file(&path, "test", &frames)?;
+    assert_eq!(bundle::read_tracks(&path)?, frames);
     Ok(())
 }
 
@@ -315,19 +344,33 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
     )?;
     assert_eq!(estimated.processed_detections, truth.processed_detections);
-    assert!(estimated.tracks[0].state_covariance[0] > truth.tracks[0].state_covariance[0]);
+    let estimated_track = estimated
+        .frames
+        .iter()
+        .flat_map(|frame| &frame.tracks)
+        .next()
+        .unwrap();
+    let truth_track = truth
+        .frames
+        .iter()
+        .flat_map(|frame| &frame.tracks)
+        .next()
+        .unwrap();
+    assert!(estimated_track.state_covariance[0] > truth_track.state_covariance[0]);
     assert_eq!(
         estimated
-            .tracks
+            .frames
             .iter()
+            .flat_map(|frame| &frame.tracks)
             .map(|track| track.track_id.as_str())
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["track-001", "track-002"])
     );
     assert!(
         estimated
-            .tracks
+            .frames
             .iter()
+            .flat_map(|frame| &frame.tracks)
             .all(|track| !matches!(track.track_id.as_str(), "stationary" | "moving"))
     );
 
@@ -341,7 +384,12 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
         &camera_only,
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
     )?;
-    assert!(camera_only.tracks.is_empty());
+    assert!(
+        camera_only
+            .frames
+            .iter()
+            .all(|frame| frame.tracks.is_empty())
+    );
     assert!(camera_only.diagnostics.waiting_for_range > 0);
     Ok(())
 }
@@ -360,8 +408,9 @@ fn association_experiment_keeps_two_tracker_owned_ids() -> Result<()> {
     assert_eq!(run.diagnostics.confirmed_tracks, 2);
     assert_eq!(run.diagnostics.deleted_tracks, 0);
     assert_eq!(
-        run.tracks
+        run.frames
             .iter()
+            .flat_map(|frame| &frame.tracks)
             .map(|track| track.track_id.as_str())
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["track-001", "track-002"])

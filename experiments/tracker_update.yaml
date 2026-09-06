@@ -1,0 +1,46 @@
+# One-track prediction and update
+#
+# Question: What happens between lidar measurements?
+# The gray point and outline are the prediction. The purple correction shows
+# what changes when the next lidar measurement arrives.
+# Try changing lidar noise or tracker acceleration noise, then compare runs.
+
+root_seed: 20260823
+
+world:
+  objects:
+    - id: moving
+      initial_position_m: { x: 8.0, y: -2.0 }
+      velocity_world_mps: { x: 0.6, y: 0.3 }
+
+trajectory:
+  - { id: stationary, duration_s: 6.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+
+imu:
+  enabled: true
+  rate_hz: 100.0
+  gyro_white_noise_density_radps_sqrt_hz: 0.0
+  accel_white_noise_density_mps2_sqrt_hz: 0.0
+
+gps:
+  enabled: true
+  rate_hz: 2.0
+  horizontal_position_stddev_m: 0.01
+
+camera:
+  enabled: false
+
+lidar:
+  enabled: true
+  rate_hz: 1.0
+  horizontal_fov_rad: 6.283185307179586
+  max_range_m: 25.0
+  range_noise_stddev_m: 0.15
+  bearing_noise_stddev_rad: 0.01
+  detection_probability: 1.0
+
+object_tracker:
+  acceleration_noise_stddev_mps2: 0.2
+  gate_sigma: 4.0
+  confirmation_hits: 1
+  max_time_without_update_s: 10.0

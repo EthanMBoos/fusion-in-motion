@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, ensure};
 use fusion_schema::messages::{
     CameraDetection, CameraFrame, EgoStateEstimate, EgoTruthState, LidarDetection, LidarScan,
-    MeasurementTime, ObjectTrack, Vec2,
+    MeasurementTime, ObjectTrack, ObjectTrackFrame, Vec2,
 };
 use nalgebra::{SMatrix, SVector, Vector2};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,11 @@ pub struct TrackerDiagnostics {
     pub associated_lidar_detections: usize,
     pub unmatched_camera_detections: usize,
     pub unmatched_lidar_detections: usize,
+    pub candidate_pairs: usize,
+    pub gated_out_pairs: usize,
+    pub invalid_candidate_pairs: usize,
+    pub selected_associations: usize,
+    pub missed_updates: usize,
     pub created_tracks: usize,
     pub confirmed_tracks: usize,
     pub deleted_tracks: usize,
@@ -91,9 +96,10 @@ pub struct TrackerDiagnostics {
 
 #[derive(Debug)]
 pub struct TrackerRun {
-    pub tracks: Vec<ObjectTrack>,
+    pub frames: Vec<ObjectTrackFrame>,
     pub diagnostics: TrackerDiagnostics,
     pub processed_detections: Vec<String>,
+    pub(crate) history: TrackerHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,10 +221,92 @@ enum Detection {
     Lidar(LidarDetection),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SensorKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SensorKind {
     Camera,
     Lidar,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct TrackSnapshot {
+    pub position_world_m: [f64; 2],
+    pub velocity_world_mps: [f64; 2],
+    pub state_covariance: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "sensor", rename_all = "snake_case")]
+pub(crate) enum DetectionRecord {
+    Camera {
+        bearing_rad: f64,
+        bearing_variance_rad2: f64,
+    },
+    Lidar {
+        range_m: f64,
+        bearing_rad: f64,
+        range_variance_m2: f64,
+        bearing_variance_rad2: f64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GateResult {
+    Inside,
+    Outside,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UpdateResult {
+    Applied,
+    Rejected,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AssociationRecord {
+    pub batch_id: String,
+    pub measurement_time_ns: i64,
+    pub arrival_time_ns: i64,
+    pub detection_index: usize,
+    pub detection: DetectionRecord,
+    pub track_id: String,
+    pub predicted: Option<TrackSnapshot>,
+    pub normalized_innovation_squared: Option<f64>,
+    pub gate_threshold_squared: f64,
+    pub gate_result: GateResult,
+    pub selected: bool,
+    pub update_result: Option<UpdateResult>,
+    pub corrected: Option<TrackSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LifecycleEventKind {
+    Created,
+    Confirmed,
+    Missed,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LifecycleRecord {
+    pub measurement_time_ns: i64,
+    pub arrival_time_ns: i64,
+    pub sensor: SensorKind,
+    pub track_id: String,
+    pub event: LifecycleEventKind,
+    pub detection: Option<DetectionRecord>,
+    pub state: TrackSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct TrackerHistory {
+    pub associations: Vec<AssociationRecord>,
+    pub lifecycle: Vec<LifecycleRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -257,7 +345,7 @@ struct Filter {
 struct ManagedTrack {
     filter: Filter,
     hits: usize,
-    missed_lidar_scans: usize,
+    last_update_time_ns: i64,
     confirmed: bool,
 }
 
@@ -274,8 +362,10 @@ pub fn run(
 
     let mut filters = BTreeMap::<String, ManagedTrack>::new();
     let mut next_track_number = 1_u64;
-    let mut tracks = Vec::new();
+    let mut frames = Vec::new();
     let mut processed_detections = Vec::new();
+    let mut history = TrackerHistory::default();
+    let max_time_without_update_ns = (config.max_time_without_update_s * 1.0e9).round() as i64;
 
     for batch in batches {
         let egos = batch
@@ -286,7 +376,7 @@ pub fn run(
         diagnostics.missing_ego_pose += egos.iter().filter(|ego| ego.is_none()).count();
 
         let track_ids = filters.keys().cloned().collect::<Vec<_>>();
-        let associations = associate(
+        let mut association = associate(
             &track_ids,
             &filters,
             &batch,
@@ -294,16 +384,27 @@ pub fn run(
             config.gate_sigma,
             config.acceleration_noise_stddev_mps2,
         );
-        let matched_tracks = associations
+        diagnostics.candidate_pairs += association.records.len();
+        diagnostics.gated_out_pairs += association
+            .records
             .iter()
-            .map(|(track_index, _)| track_ids[*track_index].clone())
-            .collect::<BTreeSet<_>>();
-        let matched_detections = associations
+            .filter(|record| record.gate_result == GateResult::Outside)
+            .count();
+        diagnostics.invalid_candidate_pairs += association
+            .records
+            .iter()
+            .filter(|record| record.gate_result == GateResult::Invalid)
+            .count();
+        diagnostics.selected_associations += association.matches.len();
+
+        let selected_detections = association
+            .matches
             .iter()
             .map(|(_, detection_index)| *detection_index)
             .collect::<BTreeSet<_>>();
+        let mut updated_tracks = BTreeSet::new();
 
-        for (track_index, detection_index) in associations {
+        for &(track_index, detection_index) in &association.matches {
             let track_id = &track_ids[track_index];
             let detection = &batch.detections[detection_index];
             let ego = egos[detection_index].expect("association requires ego pose");
@@ -322,43 +423,75 @@ pub fn run(
                     update_lidar(&mut track.filter, value, ego, config.gate_sigma)
                 }
             };
+            let record = association
+                .records
+                .iter_mut()
+                .find(|record| {
+                    record.track_id == *track_id && record.detection_index == detection_index
+                })
+                .expect("selected association was recorded");
             match result {
-                TrackUpdate::Applied => {
+                UpdateResult::Applied => {
+                    record.update_result = Some(UpdateResult::Applied);
+                    record.corrected = Some(snapshot(&track.filter));
                     diagnostics.applied_updates += 1;
                     match detection {
                         Detection::Camera(_) => {
                             diagnostics.associated_camera_detections += 1;
-                            track.missed_lidar_scans = 0;
                         }
                         Detection::Lidar(_) => {
                             diagnostics.associated_lidar_detections += 1;
-                            track.missed_lidar_scans = 0;
                         }
                     }
+                    track.last_update_time_ns = detection_time_ns;
                     track.hits += 1;
+                    updated_tracks.insert(track_id.clone());
                     if !track.confirmed && track.hits >= config.confirmation_hits {
                         track.confirmed = true;
                         diagnostics.confirmed_tracks += 1;
+                        history.lifecycle.push(lifecycle_record(
+                            &batch,
+                            track_id,
+                            LifecycleEventKind::Confirmed,
+                            None,
+                            &track.filter,
+                        ));
                     }
                 }
-                TrackUpdate::Rejected => diagnostics.rejected_updates += 1,
-                TrackUpdate::Invalid => diagnostics.invalid_updates += 1,
+                UpdateResult::Rejected => {
+                    record.update_result = Some(UpdateResult::Rejected);
+                    diagnostics.rejected_updates += 1;
+                }
+                UpdateResult::Invalid => {
+                    record.update_result = Some(UpdateResult::Invalid);
+                    diagnostics.invalid_updates += 1;
+                }
             }
         }
 
-        if batch.sensor == SensorKind::Lidar {
-            for track_id in &track_ids {
-                if !matched_tracks.contains(track_id) {
-                    filters
-                        .get_mut(track_id)
-                        .expect("existing track")
-                        .missed_lidar_scans += 1;
-                }
+        let output_time_ns = batch.output_time_ns();
+        for track_id in &track_ids {
+            if !updated_tracks.contains(track_id) {
+                let track = filters.get(track_id).expect("existing track");
+                let mut predicted = track.filter.clone();
+                propagate(
+                    &mut predicted,
+                    output_time_ns,
+                    config.acceleration_noise_stddev_mps2,
+                )?;
+                history.lifecycle.push(lifecycle_record(
+                    &batch,
+                    track_id,
+                    LifecycleEventKind::Missed,
+                    None,
+                    &predicted,
+                ));
+                diagnostics.missed_updates += 1;
             }
         }
 
         for (detection_index, detection) in batch.detections.iter().enumerate() {
-            if matched_detections.contains(&detection_index) || egos[detection_index].is_none() {
+            if selected_detections.contains(&detection_index) || egos[detection_index].is_none() {
                 continue;
             }
             match detection {
@@ -372,7 +505,7 @@ pub fn run(
                     next_track_number += 1;
                     let confirmed = config.confirmation_hits == 1;
                     filters.insert(
-                        track_id,
+                        track_id.clone(),
                         ManagedTrack {
                             filter: initialize(
                                 value,
@@ -380,24 +513,60 @@ pub fn run(
                                 batch.detection_time_ns(detection),
                             ),
                             hits: 1,
-                            missed_lidar_scans: 0,
+                            last_update_time_ns: batch.detection_time_ns(detection),
                             confirmed,
                         },
                     );
+                    let track = filters.get(&track_id).expect("created track");
+                    history.lifecycle.push(lifecycle_record(
+                        &batch,
+                        &track_id,
+                        LifecycleEventKind::Created,
+                        Some(detection),
+                        &track.filter,
+                    ));
                     diagnostics.created_tracks += 1;
                     diagnostics.applied_updates += 1;
                     if confirmed {
                         diagnostics.confirmed_tracks += 1;
+                        history.lifecycle.push(lifecycle_record(
+                            &batch,
+                            &track_id,
+                            LifecycleEventKind::Confirmed,
+                            None,
+                            &track.filter,
+                        ));
                     }
                 }
             }
         }
 
-        let before = filters.len();
-        filters.retain(|_, track| track.missed_lidar_scans < config.max_missed_lidar_scans);
-        diagnostics.deleted_tracks += before - filters.len();
+        let stale_tracks = filters
+            .iter()
+            .filter(|(_, track)| {
+                output_time_ns.saturating_sub(track.last_update_time_ns)
+                    >= max_time_without_update_ns
+            })
+            .map(|(track_id, _)| track_id.clone())
+            .collect::<Vec<_>>();
+        for track_id in stale_tracks {
+            let mut track = filters.remove(&track_id).expect("stale track exists");
+            propagate(
+                &mut track.filter,
+                output_time_ns,
+                config.acceleration_noise_stddev_mps2,
+            )?;
+            history.lifecycle.push(lifecycle_record(
+                &batch,
+                &track_id,
+                LifecycleEventKind::Deleted,
+                None,
+                &track.filter,
+            ));
+            diagnostics.deleted_tracks += 1;
+        }
 
-        let output_time_ns = batch.output_time_ns();
+        let mut output_tracks = Vec::new();
         for (track_id, track) in filters.iter().filter(|(_, track)| track.confirmed) {
             let mut predicted = track.filter.clone();
             propagate(
@@ -405,8 +574,13 @@ pub fn run(
                 output_time_ns,
                 config.acceleration_noise_stddev_mps2,
             )?;
-            tracks.push(to_track(&predicted, track_id, batch.arrival_time_ns));
+            output_tracks.push(to_track(&predicted, track_id));
         }
+        frames.push(ObjectTrackFrame {
+            estimate_time_ns: output_time_ns,
+            available_time_ns: batch.arrival_time_ns,
+            tracks: output_tracks,
+        });
 
         processed_detections.extend(
             batch
@@ -415,13 +589,33 @@ pub fn run(
                 .enumerate()
                 .map(|(index, _)| format!("{}:{index}", batch.stable_id)),
         );
+        history.associations.extend(association.records);
     }
 
     Ok(TrackerRun {
-        tracks,
+        frames,
         diagnostics,
         processed_detections,
+        history,
     })
+}
+
+fn lifecycle_record(
+    batch: &DetectionBatch,
+    track_id: &str,
+    event: LifecycleEventKind,
+    detection: Option<&Detection>,
+    filter: &Filter,
+) -> LifecycleRecord {
+    LifecycleRecord {
+        measurement_time_ns: filter.time_ns,
+        arrival_time_ns: batch.arrival_time_ns,
+        sensor: batch.sensor,
+        track_id: track_id.to_owned(),
+        event,
+        detection: detection.map(detection_record),
+        state: snapshot(filter),
+    }
 }
 
 fn prepare_timing(
@@ -541,43 +735,99 @@ fn associate(
     egos: &[Option<EgoPose>],
     gate_sigma: f64,
     acceleration_noise_stddev_mps2: f64,
-) -> Vec<(usize, usize)> {
+) -> AssociationDecision {
     if track_ids.is_empty() || batch.detections.is_empty() {
-        return Vec::new();
+        return AssociationDecision::default();
     }
     let unmatched_cost = gate_sigma.powi(2) + 1.0;
     let invalid_cost = unmatched_cost * 1.0e6;
     let mut costs = Vec::with_capacity(track_ids.len());
+    let mut records = Vec::with_capacity(track_ids.len() * batch.detections.len());
     for track_id in track_ids {
         let mut row = Vec::with_capacity(batch.detections.len() + track_ids.len());
         let track = &tracks[track_id];
         for (index, detection) in batch.detections.iter().enumerate() {
-            let cost = egos[index]
-                .and_then(|ego| {
-                    let mut predicted = track.filter.clone();
-                    propagate(
-                        &mut predicted,
-                        batch.detection_time_ns(detection),
-                        acceleration_noise_stddev_mps2,
-                    )
-                    .ok()?;
-                    normalized_innovation_squared(&predicted, detection, ego)
-                })
-                .filter(|cost| cost.sqrt() <= gate_sigma)
-                .unwrap_or(invalid_cost);
-            row.push(cost);
+            let measurement_time_ns = batch.detection_time_ns(detection);
+            let mut predicted = track.filter.clone();
+            let propagated = propagate(
+                &mut predicted,
+                measurement_time_ns,
+                acceleration_noise_stddev_mps2,
+            )
+            .is_ok();
+            let normalized_innovation_squared = propagated
+                .then_some(())
+                .and(egos[index])
+                .and_then(|ego| normalized_innovation_squared(&predicted, detection, ego));
+            let gate_result = match normalized_innovation_squared {
+                Some(value) if value >= 0.0 && value.sqrt() <= gate_sigma => GateResult::Inside,
+                Some(value) if value >= 0.0 => GateResult::Outside,
+                _ => GateResult::Invalid,
+            };
+            row.push(if gate_result == GateResult::Inside {
+                normalized_innovation_squared.expect("inside gate has finite NIS")
+            } else {
+                invalid_cost
+            });
+            records.push(AssociationRecord {
+                batch_id: batch.stable_id.clone(),
+                measurement_time_ns,
+                arrival_time_ns: batch.arrival_time_ns,
+                detection_index: index,
+                detection: detection_record(detection),
+                track_id: track_id.clone(),
+                predicted: propagated.then(|| snapshot(&predicted)),
+                normalized_innovation_squared,
+                gate_threshold_squared: gate_sigma.powi(2),
+                gate_result,
+                selected: false,
+                update_result: None,
+                corrected: None,
+            });
         }
         row.extend(std::iter::repeat_n(unmatched_cost, track_ids.len()));
         costs.push(row);
     }
-    math::minimum_cost_assignment(&costs)
+    let matches = math::minimum_cost_assignment(&costs)
         .into_iter()
         .enumerate()
         .filter(|(track_index, detection_index)| {
             *detection_index < batch.detections.len()
                 && costs[*track_index][*detection_index] < unmatched_cost
         })
-        .collect()
+        .collect::<Vec<_>>();
+    for &(track_index, detection_index) in &matches {
+        let track_id = &track_ids[track_index];
+        records
+            .iter_mut()
+            .find(|record| {
+                record.track_id == *track_id && record.detection_index == detection_index
+            })
+            .expect("assigned candidate was recorded")
+            .selected = true;
+    }
+    AssociationDecision { matches, records }
+}
+
+#[derive(Default)]
+struct AssociationDecision {
+    matches: Vec<(usize, usize)>,
+    records: Vec<AssociationRecord>,
+}
+
+fn detection_record(detection: &Detection) -> DetectionRecord {
+    match detection {
+        Detection::Camera(value) => DetectionRecord::Camera {
+            bearing_rad: value.bearing_rad,
+            bearing_variance_rad2: value.bearing_variance_rad2,
+        },
+        Detection::Lidar(value) => DetectionRecord::Lidar {
+            range_m: value.range_m,
+            bearing_rad: value.bearing_rad,
+            range_variance_m2: value.range_variance_m2,
+            bearing_variance_rad2: value.bearing_variance_rad2,
+        },
+    }
 }
 
 fn normalized_innovation_squared(
@@ -664,13 +914,6 @@ fn propagate(filter: &mut Filter, time_ns: i64, acceleration_noise_stddev_mps2: 
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrackUpdate {
-    Applied,
-    Rejected,
-    Invalid,
-}
-
 fn camera_innovation(
     filter: &Filter,
     detection: &CameraDetection,
@@ -753,11 +996,11 @@ fn update_camera(
     detection: &CameraDetection,
     ego: EgoPose,
     gate_sigma: f64,
-) -> TrackUpdate {
+) -> UpdateResult {
     let Some((residual, jacobian, measurement_variance)) =
         camera_innovation(filter, detection, ego)
     else {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     };
     apply_track_scalar(filter, residual, jacobian, measurement_variance, gate_sigma)
 }
@@ -767,27 +1010,27 @@ fn update_lidar(
     detection: &LidarDetection,
     ego: EgoPose,
     gate_sigma: f64,
-) -> TrackUpdate {
+) -> UpdateResult {
     let Some((residual, jacobian, measurement_covariance)) =
         lidar_innovation(filter, detection, ego)
     else {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     };
     if !residual.iter().all(|value| value.is_finite())
         || !measurement_covariance.iter().all(|value| value.is_finite())
     {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     }
     let innovation = jacobian * filter.covariance * jacobian.transpose() + measurement_covariance;
     let Some(inverse) = innovation.try_inverse() else {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     };
     let normalized_squared = (residual.transpose() * inverse * residual)[0];
     if !normalized_squared.is_finite() {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     }
     if normalized_squared.sqrt() > gate_sigma {
-        return TrackUpdate::Rejected;
+        return UpdateResult::Rejected;
     }
     let gain = filter.covariance * jacobian.transpose() * inverse;
     let state = filter.state.with_correction(gain * residual);
@@ -803,15 +1046,15 @@ fn apply_track_scalar(
     jacobian: TrackVector,
     measurement_variance: f64,
     gate_sigma: f64,
-) -> TrackUpdate {
+) -> UpdateResult {
     if !residual.is_finite() {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     }
     let Some(variance) = innovation_variance(filter, jacobian, measurement_variance) else {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     };
     if residual.abs() / variance.sqrt() > gate_sigma {
-        return TrackUpdate::Rejected;
+        return UpdateResult::Rejected;
     }
     let gain = filter.covariance * jacobian / variance;
     let state = filter.state.with_correction(gain * residual);
@@ -825,7 +1068,7 @@ fn commit_update(
     filter: &mut Filter,
     state: TrackState,
     covariance: TrackCovariance,
-) -> TrackUpdate {
+) -> UpdateResult {
     let covariance = 0.5 * (covariance + covariance.transpose());
     if !state.position_world_m.iter().all(|value| value.is_finite())
         || !state
@@ -835,18 +1078,32 @@ fn commit_update(
         || !covariance.iter().all(|value| value.is_finite())
         || covariance.clone_owned().cholesky().is_none()
     {
-        return TrackUpdate::Invalid;
+        return UpdateResult::Invalid;
     }
     filter.state = state;
     filter.covariance = covariance;
-    TrackUpdate::Applied
+    UpdateResult::Applied
 }
 
-fn to_track(filter: &Filter, track_id: &str, available_time_ns: i64) -> ObjectTrack {
+fn snapshot(filter: &Filter) -> TrackSnapshot {
+    TrackSnapshot {
+        position_world_m: [
+            filter.state.position_world_m.x,
+            filter.state.position_world_m.y,
+        ],
+        velocity_world_mps: [
+            filter.state.velocity_world_mps.x,
+            filter.state.velocity_world_mps.y,
+        ],
+        state_covariance: (0..4)
+            .flat_map(|row| (0..4).map(move |column| filter.covariance[(row, column)]))
+            .collect(),
+    }
+}
+
+fn to_track(filter: &Filter, track_id: &str) -> ObjectTrack {
     ObjectTrack {
         track_id: track_id.to_owned(),
-        estimate_time_ns: filter.time_ns,
-        available_time_ns,
         position_world_m: Some(Vec2 {
             x: filter.state.position_world_m.x,
             y: filter.state.position_world_m.y,
@@ -911,7 +1168,7 @@ mod tests {
 
         assert_eq!(
             update_lidar(&mut filter, &outlier, ego, 3.0),
-            TrackUpdate::Rejected
+            UpdateResult::Rejected
         );
         assert_eq!(filter.state, original_state);
         assert_eq!(filter.covariance, original_covariance);
@@ -946,13 +1203,12 @@ mod tests {
             ],
         };
         let result = run(&ObjectTrackerConfig::default(), &measurements, &history)?;
-        let first = result
-            .tracks
+        let tracks = &result.frames.last().unwrap().tracks;
+        let first = tracks
             .iter()
             .find(|track| track.track_id == "track-001")
             .unwrap();
-        let second = result
-            .tracks
+        let second = tracks
             .iter()
             .find(|track| track.track_id == "track-002")
             .unwrap();
@@ -964,7 +1220,151 @@ mod tests {
     }
 
     #[test]
-    fn track_is_deleted_after_configured_unmatched_lidar_scans() -> Result<()> {
+    fn history_records_prediction_gate_and_correction() -> Result<()> {
+        let time = |time_ns| MeasurementTime {
+            measurement_time_ns: time_ns,
+            arrival_time_ns: time_ns,
+        };
+        let measurements = vec![
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(0)),
+                detections: vec![detection(5.0, 0.0, 0)],
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(1_000_000_000)),
+                detections: vec![detection(5.5, 0.0, 1_000_000_000)],
+            }),
+        ];
+        let history = EgoHistory {
+            samples: vec![
+                ego(),
+                EgoPose {
+                    time_ns: 1_000_000_000,
+                    ..ego()
+                },
+            ],
+        };
+        let result = run(
+            &ObjectTrackerConfig {
+                confirmation_hits: 1,
+                ..ObjectTrackerConfig::default()
+            },
+            &measurements,
+            &history,
+        )?;
+        let association = result.history.associations.last().unwrap();
+        assert_eq!(association.gate_result, GateResult::Inside);
+        assert!(association.selected);
+        assert_eq!(association.update_result, Some(UpdateResult::Applied));
+        assert!(
+            association
+                .normalized_innovation_squared
+                .unwrap()
+                .is_finite()
+        );
+        assert!(association.predicted.is_some());
+        assert!(association.corrected.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn history_records_a_gated_candidate_and_missed_update() -> Result<()> {
+        let time = |time_ns| MeasurementTime {
+            measurement_time_ns: time_ns,
+            arrival_time_ns: time_ns,
+        };
+        let measurements = vec![
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(0)),
+                detections: vec![detection(5.0, 0.0, 0)],
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(1_000_000_000)),
+                detections: vec![detection(5.0, std::f64::consts::FRAC_PI_2, 1_000_000_000)],
+            }),
+        ];
+        let history = EgoHistory {
+            samples: vec![
+                ego(),
+                EgoPose {
+                    time_ns: 1_000_000_000,
+                    ..ego()
+                },
+            ],
+        };
+        let result = run(
+            &ObjectTrackerConfig {
+                confirmation_hits: 1,
+                max_time_without_update_s: 2.0,
+                gate_sigma: 0.1,
+                ..ObjectTrackerConfig::default()
+            },
+            &measurements,
+            &history,
+        )?;
+        let candidate = result.history.associations.first().unwrap();
+        assert_eq!(candidate.gate_result, GateResult::Outside);
+        assert!(!candidate.selected);
+        assert!(candidate.corrected.is_none());
+        assert!(result.history.lifecycle.iter().any(|record| {
+            record.track_id == "track-001" && record.event == LifecycleEventKind::Missed
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn camera_update_refreshes_track_lifetime() -> Result<()> {
+        let time = |time_ns| MeasurementTime {
+            measurement_time_ns: time_ns,
+            arrival_time_ns: time_ns,
+        };
+        let measurements = vec![
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(0)),
+                detections: vec![detection(5.0, 0.0, 0)],
+            }),
+            PerceptionMeasurement::Camera(CameraFrame {
+                time: Some(time(1_000_000_000)),
+                detections: vec![CameraDetection {
+                    bearing_rad: 0.0,
+                    bearing_variance_rad2: 0.0001,
+                }],
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(2_000_000_000)),
+                detections: Vec::new(),
+            }),
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(2_500_000_000)),
+                detections: Vec::new(),
+            }),
+        ];
+        let history = EgoHistory {
+            samples: vec![
+                ego(),
+                EgoPose {
+                    time_ns: 2_500_000_000,
+                    ..ego()
+                },
+            ],
+        };
+        let result = run(
+            &ObjectTrackerConfig {
+                confirmation_hits: 1,
+                max_time_without_update_s: 1.5,
+                ..ObjectTrackerConfig::default()
+            },
+            &measurements,
+            &history,
+        )?;
+        assert_eq!(result.frames[2].tracks.len(), 1);
+        assert!(result.frames[3].tracks.is_empty());
+        assert_eq!(result.diagnostics.deleted_tracks, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn track_is_deleted_after_configured_time_without_an_update() -> Result<()> {
         let time = |time_ns| MeasurementTime {
             measurement_time_ns: time_ns,
             arrival_time_ns: time_ns,
@@ -994,19 +1394,14 @@ mod tests {
         };
         let config = ObjectTrackerConfig {
             confirmation_hits: 1,
-            max_missed_lidar_scans: 2,
+            max_time_without_update_s: 2.0,
             ..ObjectTrackerConfig::default()
         };
         let result = run(&config, &measurements, &history)?;
         assert_eq!(result.diagnostics.created_tracks, 1);
         assert_eq!(result.diagnostics.confirmed_tracks, 1);
         assert_eq!(result.diagnostics.deleted_tracks, 1);
-        assert!(
-            result
-                .tracks
-                .iter()
-                .all(|track| track.estimate_time_ns < 2_000_000_000)
-        );
+        assert!(result.frames.last().unwrap().tracks.is_empty());
         Ok(())
     }
 }

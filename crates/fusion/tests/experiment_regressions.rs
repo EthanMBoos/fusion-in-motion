@@ -24,6 +24,8 @@ const RUN_FILES: &[&str] = &[
     "tracks/truth-ego.mcap",
     "reports/baseline/metrics.json",
     "reports/baseline/summary.md",
+    "reports/baseline/tracker-history-estimated-ego.json",
+    "reports/baseline/tracker-history-truth-ego.json",
 ];
 
 #[derive(Debug, Deserialize)]

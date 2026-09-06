@@ -10,7 +10,7 @@ use fusion_schema::{
     FILE_DESCRIPTOR_SET,
     messages::{
         CameraFrame, EgoStateEstimate, EgoTruthState, GpsFix, ImuBiasTruth, ImuSample, LidarScan,
-        MeasurementTime, ObjectTrack, ObjectTruthState,
+        MeasurementTime, ObjectTrackFrame, ObjectTruthState,
     },
 };
 use mcap::{Writer, records::MessageHeader};
@@ -20,7 +20,7 @@ use crate::{
     estimator::{BaselineAssumptions, GpsDiagnostics, TimingDiagnostics},
     eval::RunMetrics,
     scenario::{ResolvedScenario, canonical_yaml},
-    tracker::TrackerDiagnostics,
+    tracker::{TrackerDiagnostics, TrackerHistory},
 };
 
 #[derive(Debug, Clone)]
@@ -110,31 +110,31 @@ pub fn write_ego_estimates_file(
     Ok(())
 }
 
-pub fn write_tracks(output: &Path, name: &str, tracks: &[ObjectTrack]) -> Result<()> {
+pub fn write_tracks(output: &Path, name: &str, frames: &[ObjectTrackFrame]) -> Result<()> {
     write_tracks_file(
         &output.join("tracks").join(format!("{name}.mcap")),
         name,
-        tracks,
+        frames,
     )
 }
 
-pub fn write_tracks_file(path: &Path, name: &str, tracks: &[ObjectTrack]) -> Result<()> {
+pub fn write_tracks_file(path: &Path, name: &str, frames: &[ObjectTrackFrame]) -> Result<()> {
     let mut writer = new_writer(path)?;
-    let schema = writer.add_schema("fusion.ObjectTrack", "protobuf", FILE_DESCRIPTOR_SET)?;
+    let schema = writer.add_schema("fusion.ObjectTrackFrame", "protobuf", FILE_DESCRIPTOR_SET)?;
     let channel = writer.add_channel(
         schema,
         &format!("/track/object/{name}"),
         "protobuf",
         &BTreeMap::new(),
     )?;
-    for (sequence, track) in tracks.iter().enumerate() {
+    for (sequence, frame) in frames.iter().enumerate() {
         write_message(
             &mut writer,
             channel,
             sequence as u32,
-            track.available_time_ns,
-            track.estimate_time_ns,
-            &track.encode_to_vec(),
+            frame.available_time_ns,
+            frame.estimate_time_ns,
+            &frame.encode_to_vec(),
         )?;
     }
     writer.finish()?;
@@ -188,8 +188,27 @@ pub fn read_ego_estimates(path: &Path) -> Result<Vec<EgoStateEstimate>> {
     read_schema(path, "fusion.EgoStateEstimate")
 }
 
-pub fn read_tracks(path: &Path) -> Result<Vec<ObjectTrack>> {
-    read_schema(path, "fusion.ObjectTrack")
+pub fn read_tracks(path: &Path) -> Result<Vec<ObjectTrackFrame>> {
+    read_schema(path, "fusion.ObjectTrackFrame")
+}
+
+pub(crate) fn write_tracker_history(
+    output: &Path,
+    name: &str,
+    history: &TrackerHistory,
+) -> Result<()> {
+    fs::write(
+        output
+            .join("reports/baseline")
+            .join(format!("tracker-history-{name}.json")),
+        serde_json::to_vec_pretty(history)?,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn read_tracker_history(path: &Path) -> Result<TrackerHistory> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("invalid {}", path.display()))
 }
 
 fn read_schema<T: Message + Default>(path: &Path, expected: &str) -> Result<Vec<T>> {
@@ -261,6 +280,24 @@ pub fn write_reports(
         tracker_estimated_diagnostics.confirmed_tracks,
         tracker_estimated_diagnostics.deleted_tracks,
     );
+    summary.push_str(&format!(
+        "Candidate pairs/gated out/selected: {}/{}/{}  \n\
+         Missed tracker updates: {}  \n\
+         Estimated ego missed/false/switches/fragments: {}/{}/{}/{}  \n\
+         Truth ego missed/false/switches/fragments: {}/{}/{}/{}\n",
+        tracker_estimated_diagnostics.candidate_pairs,
+        tracker_estimated_diagnostics.gated_out_pairs,
+        tracker_estimated_diagnostics.selected_associations,
+        tracker_estimated_diagnostics.missed_updates,
+        metrics.tracks_with_estimated_ego.missed_object_samples,
+        metrics.tracks_with_estimated_ego.false_track_samples,
+        metrics.tracks_with_estimated_ego.identity_switch_count,
+        metrics.tracks_with_estimated_ego.track_fragment_count,
+        metrics.tracks_with_truth_ego.missed_object_samples,
+        metrics.tracks_with_truth_ego.false_track_samples,
+        metrics.tracks_with_truth_ego.identity_switch_count,
+        metrics.tracks_with_truth_ego.track_fragment_count,
+    ));
     if let (Some(gyro_rmse), Some(accel_rmse), Some(gyro_coverage), Some(accel_coverage)) = (
         metrics.ego.gyro_bias_rmse_radps,
         metrics.ego.accel_bias_rmse_mps2,

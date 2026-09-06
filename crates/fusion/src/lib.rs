@@ -100,14 +100,16 @@ pub(crate) fn run_resolved_experiment(
         &generated.object_truth_states,
         &generated.imu_bias_truth,
         &ego_run.estimates,
-        &estimated_tracker.tracks,
-        &truth_tracker.tracks,
+        &estimated_tracker.frames,
+        &truth_tracker.frames,
     );
 
     bundle::write_generated(output, &generated)?;
     bundle::write_ego_estimates(output, &ego_run.estimates)?;
-    bundle::write_tracks(output, "estimated-ego", &estimated_tracker.tracks)?;
-    bundle::write_tracks(output, "truth-ego", &truth_tracker.tracks)?;
+    bundle::write_tracks(output, "estimated-ego", &estimated_tracker.frames)?;
+    bundle::write_tracks(output, "truth-ego", &truth_tracker.frames)?;
+    bundle::write_tracker_history(output, "estimated-ego", &estimated_tracker.history)?;
+    bundle::write_tracker_history(output, "truth-ego", &truth_tracker.history)?;
     bundle::write_reports(
         output,
         &metrics,

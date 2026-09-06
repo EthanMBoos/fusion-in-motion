@@ -6,13 +6,14 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use fusion_schema::messages::{
-    EgoStateEstimate, EgoTruthState, ImuBiasTruth, ObjectTrack, ObjectTruthState, Pose2,
+    EgoStateEstimate, EgoTruthState, ImuBiasTruth, ObjectTrackFrame, ObjectTruthState, Pose2,
 };
 
 use crate::{
     bundle::{self, MeasurementRecord},
     math,
     scenario::load_and_resolve,
+    tracker::TrackerHistory,
 };
 
 const TRUTH_COLOR: u32 = 0x33cc66ff;
@@ -45,6 +46,8 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     let estimates = bundle::read_ego_estimates(&run.join("estimates/ego-baseline.mcap"))?;
     let estimated_tracks = bundle::read_tracks(&run.join("tracks/estimated-ego.mcap"))?;
     let truth_tracks = bundle::read_tracks(&run.join("tracks/truth-ego.mcap"))?;
+    let truth_tracker_history =
+        bundle::read_tracker_history(&run.join("reports/baseline/tracker-history-truth-ego.json"))?;
     let scenario = load_and_resolve(&run.join("scenario.resolved.yaml"))?;
     if ego_truth.is_empty() {
         bail!("cannot visualize a run without ego truth");
@@ -61,10 +64,16 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
         .save(output)
         .with_context(|| format!("failed to create {}", output.display()))?;
 
+    let sensor_guide = match (scenario.camera.enabled, scenario.lidar.enabled) {
+        (true, true) => "\n\nCamera: cyan direction only. Lidar: blue range and direction.",
+        (true, false) => "\n\nCamera: cyan direction only.",
+        (false, true) => "\n\nLidar: blue range and direction.",
+        (false, false) => "",
+    };
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::new(format!(
-            "# Fusion in Motion — {run_name}\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nCamera: cyan direction only. Lidar: blue range and direction."
+            "# Fusion in Motion — {run_name}\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nTracker update: gray prediction, purple correction, and 95% uncertainty outlines use the true vehicle pose.{sensor_guide}"
         )),
     )?;
     log_styles(&rec)?;
@@ -87,6 +96,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     log_sensor_references(&rec, &scenario, &measurements)?;
     log_ego(&rec, &ego_truth, &estimates)?;
     log_objects(&rec, &object_truth, &estimated_tracks, &truth_tracks)?;
+    log_tracker_history(&rec, &truth_tracker_history)?;
     log_measurements(&rec, &measurements)?;
     log_bias(&rec, &imu_bias_truth, &estimates)?;
     log_errors(
@@ -170,8 +180,8 @@ fn log_paths(
     ego_truth: &[EgoTruthState],
     estimates: &[EgoStateEstimate],
     object_truth: &[ObjectTruthState],
-    estimated_tracks: &[ObjectTrack],
-    truth_tracks: &[ObjectTrack],
+    estimated_tracks: &[ObjectTrackFrame],
+    truth_tracks: &[ObjectTrackFrame],
 ) -> Result<()> {
     let truth_samples = ego_truth.iter().filter_map(|state| {
         Some((
@@ -246,8 +256,8 @@ fn log_map_bounds(
     ego_truth: &[EgoTruthState],
     estimates: &[EgoStateEstimate],
     object_truth: &[ObjectTruthState],
-    estimated_tracks: &[ObjectTrack],
-    truth_tracks: &[ObjectTrack],
+    estimated_tracks: &[ObjectTrackFrame],
+    truth_tracks: &[ObjectTrackFrame],
 ) -> Result<()> {
     let ego_truth_points = ego_truth
         .iter()
@@ -264,6 +274,7 @@ fn log_map_bounds(
     let track_points = estimated_tracks
         .iter()
         .chain(truth_tracks)
+        .flat_map(|frame| &frame.tracks)
         .filter_map(|track| track.position_world_m.as_ref())
         .map(point2);
     let mut points = ego_truth_points
@@ -323,16 +334,18 @@ fn log_object_paths(
 fn log_track_paths(
     rec: &rerun::RecordingStream,
     root: &str,
-    tracks: &[ObjectTrack],
+    frames: &[ObjectTrackFrame],
     color: u32,
 ) -> Result<()> {
     let mut by_track = std::collections::BTreeMap::<&str, Vec<(i64, [f32; 2])>>::new();
-    for track in tracks {
-        if let Some(position) = &track.position_world_m {
-            by_track
-                .entry(&track.track_id)
-                .or_default()
-                .push((track.estimate_time_ns, point2(position)));
+    for frame in frames {
+        for track in &frame.tracks {
+            if let Some(position) = &track.position_world_m {
+                by_track
+                    .entry(&track.track_id)
+                    .or_default()
+                    .push((frame.estimate_time_ns, point2(position)));
+            }
         }
     }
     for (id, points) in by_track {
@@ -438,8 +451,8 @@ fn log_ego(
 fn log_objects(
     rec: &rerun::RecordingStream,
     truth: &[ObjectTruthState],
-    estimated: &[ObjectTrack],
-    truth_ego: &[ObjectTrack],
+    estimated: &[ObjectTrackFrame],
+    truth_ego: &[ObjectTrackFrame],
 ) -> Result<()> {
     for state in truth {
         if let Some(position) = &state.position_world_m {
@@ -452,7 +465,7 @@ fn log_objects(
             )?;
         }
     }
-    for (root, tracks, color) in [
+    for (root, frames, color) in [
         (
             "map/objects/estimated_ego",
             estimated,
@@ -460,21 +473,122 @@ fn log_objects(
         ),
         ("map/objects/truth_ego", truth_ego, TRUTH_EGO_TRACK_COLOR),
     ] {
-        for track in tracks {
-            if let Some(position) = &track.position_world_m {
-                set_time(rec, track.estimate_time_ns);
-                let points = rerun::Points2D::new([point2(position)])
-                    .with_colors([color])
-                    .with_radii([0.12]);
-                let points = if root == "map/objects/estimated_ego" {
-                    points.with_labels([track.track_id.as_str()])
-                } else {
-                    points
-                };
-                rec.log(format!("{root}/{}", track.track_id), &points)?;
+        for frame in frames {
+            for track in &frame.tracks {
+                if let Some(position) = &track.position_world_m {
+                    set_time(rec, frame.estimate_time_ns);
+                    let points = rerun::Points2D::new([point2(position)])
+                        .with_colors([color])
+                        .with_radii([0.12]);
+                    let points = if root == "map/objects/estimated_ego" {
+                        points.with_labels([track.track_id.as_str()])
+                    } else {
+                        points
+                    };
+                    rec.log(format!("{root}/{}", track.track_id), &points)?;
+                }
             }
         }
     }
+    Ok(())
+}
+
+fn log_tracker_history(rec: &rerun::RecordingStream, history: &TrackerHistory) -> Result<()> {
+    for record in history.associations.iter().filter(|record| record.selected) {
+        let Some(predicted) = &record.predicted else {
+            continue;
+        };
+        set_time(rec, record.measurement_time_ns);
+        let root = format!("map/tracker_update/{}", record.track_id);
+        let predicted_position = [
+            predicted.position_world_m[0] as f32,
+            predicted.position_world_m[1] as f32,
+        ];
+        rec.log(
+            format!("{root}/prediction"),
+            &rerun::Points2D::new([predicted_position])
+                .with_colors([REFERENCE_COLOR])
+                .with_radii([0.1]),
+        )?;
+        log_covariance_ellipse(
+            rec,
+            &format!("{root}/predicted_uncertainty"),
+            predicted,
+            REFERENCE_COLOR,
+        )?;
+
+        if let Some(corrected) = &record.corrected {
+            rec.log(
+                format!("{root}/correction"),
+                &rerun::Arrows2D::from_vectors([[
+                    (corrected.position_world_m[0] - predicted.position_world_m[0]) as f32,
+                    (corrected.position_world_m[1] - predicted.position_world_m[1]) as f32,
+                ]])
+                .with_origins([predicted_position])
+                .with_colors([TRUTH_EGO_TRACK_COLOR])
+                .with_radii([0.025]),
+            )?;
+            log_covariance_ellipse(
+                rec,
+                &format!("{root}/corrected_uncertainty"),
+                corrected,
+                TRUTH_EGO_TRACK_COLOR,
+            )?;
+        }
+
+        if let Some(nis) = record.normalized_innovation_squared {
+            rec.log(
+                format!("plots/tracker/{}/nis", record.track_id),
+                &rerun::Scalars::single(nis),
+            )?;
+            rec.log(
+                format!("plots/tracker/{}/gate", record.track_id),
+                &rerun::Scalars::single(record.gate_threshold_squared),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn log_covariance_ellipse(
+    rec: &rerun::RecordingStream,
+    path: &str,
+    state: &crate::tracker::TrackSnapshot,
+    color: u32,
+) -> Result<()> {
+    if state.state_covariance.len() != 16 {
+        return Ok(());
+    }
+    let covariance = nalgebra::Matrix2::new(
+        state.state_covariance[0],
+        state.state_covariance[1],
+        state.state_covariance[4],
+        state.state_covariance[5],
+    );
+    if !covariance.iter().all(|value| value.is_finite()) {
+        return Ok(());
+    }
+    let eigen = covariance.symmetric_eigen();
+    let scale = nalgebra::Matrix2::from_diagonal(
+        &eigen
+            .eigenvalues
+            .map(|value| 5.991_f64.sqrt() * value.max(0.0).sqrt()),
+    );
+    let transform = eigen.eigenvectors * scale;
+    let points = (0..=48).map(|index| {
+        let angle = std::f64::consts::TAU * index as f64 / 48.0;
+        let offset = transform * nalgebra::Vector2::new(angle.cos(), angle.sin());
+        [
+            (state.position_world_m[0] + offset.x) as f32,
+            (state.position_world_m[1] + offset.y) as f32,
+        ]
+    });
+    rec.log(
+        path,
+        &rerun::LineStrips2D::new([points.collect::<Vec<_>>()])
+            .with_colors([color])
+            .with_radii([0.012]),
+    )?;
     Ok(())
 }
 
@@ -567,8 +681,8 @@ fn log_errors(
     ego_truth: &[EgoTruthState],
     object_truth: &[ObjectTruthState],
     estimates: &[EgoStateEstimate],
-    estimated_tracks: &[ObjectTrack],
-    truth_tracks: &[ObjectTrack],
+    estimated_tracks: &[ObjectTrackFrame],
+    truth_tracks: &[ObjectTrackFrame],
 ) -> Result<()> {
     for estimate in estimates {
         let Some(truth) = ego_truth
@@ -601,38 +715,39 @@ fn log_errors(
             ),
         )?;
     }
-    for (path, tracks) in [
+    for (path, frames) in [
         ("plots/objects/estimated_ego_error_m", estimated_tracks),
         ("plots/objects/truth_ego_error_m", truth_tracks),
     ] {
-        let assignments = crate::eval::track_truth_assignments(
-            tracks,
-            object_truth,
-            scenario.metrics.max_truth_match_gap_ns,
-        );
-        for track in tracks {
-            let Some(truth_key) = assignments.get(&track.track_id) else {
-                continue;
-            };
-            let Some(truth) = object_truth
-                .iter()
-                .filter(|truth| &truth.track_key == truth_key)
-                .min_by_key(|truth| (truth.time_ns - track.estimate_time_ns).abs())
-            else {
-                continue;
-            };
-            let (Some(position), Some(truth_position)) =
-                (&track.position_world_m, &truth.position_world_m)
-            else {
-                continue;
-            };
-            set_time(rec, track.estimate_time_ns);
-            rec.log(
-                path,
-                &rerun::Scalars::single(
-                    (position.x - truth_position.x).hypot(position.y - truth_position.y),
-                ),
-            )?;
+        for frame in frames {
+            let assignments = crate::eval::frame_truth_assignments(
+                frame,
+                object_truth,
+                scenario.metrics.max_truth_match_gap_ns,
+                scenario.metrics.track_truth_match_max_distance_m,
+            );
+            for (track_index, truth_key) in assignments {
+                let track = &frame.tracks[track_index];
+                let Some(truth) = object_truth
+                    .iter()
+                    .filter(|truth| truth.track_key == truth_key)
+                    .min_by_key(|truth| (truth.time_ns - frame.estimate_time_ns).abs())
+                else {
+                    continue;
+                };
+                let (Some(position), Some(truth_position)) =
+                    (&track.position_world_m, &truth.position_world_m)
+                else {
+                    continue;
+                };
+                set_time(rec, frame.estimate_time_ns);
+                rec.log(
+                    path,
+                    &rerun::Scalars::single(
+                        (position.x - truth_position.x).hypot(position.y - truth_position.y),
+                    ),
+                )?;
+            }
         }
     }
     Ok(())
@@ -731,15 +846,21 @@ fn send_blueprint(
             .into(),
     ])
     .with_column_shares(vec![4.0, 1.5]);
-    let sensors = Grid::new([
-        Spatial2DView::new("Camera: direction only")
-            .with_origin("sensors/camera")
-            .into(),
-        Spatial2DView::new("Lidar: range and direction")
-            .with_origin("sensors/lidar")
-            .into(),
-    ])
-    .with_grid_columns(2);
+    let mut sensor_views: Vec<rerun::blueprint::ContainerLike> = Vec::new();
+    if scenario.camera.enabled {
+        sensor_views.push(
+            Spatial2DView::new("Camera: direction only")
+                .with_origin("sensors/camera")
+                .into(),
+        );
+    }
+    if scenario.lidar.enabled {
+        sensor_views.push(
+            Spatial2DView::new("Lidar: range and direction")
+                .with_origin("sensors/lidar")
+                .into(),
+        );
+    }
     let mut plot_views: Vec<rerun::blueprint::ContainerLike> = vec![
         TimeSeriesView::new("Vehicle error")
             .with_origin("plots/ego")
@@ -750,6 +871,9 @@ fn send_blueprint(
         TimeSeriesView::new("IMU").with_origin("plots/imu").into(),
         TimeSeriesView::new("Detections")
             .with_origin("plots/detections")
+            .into(),
+        TimeSeriesView::new("Tracker updates")
+            .with_origin("plots/tracker")
             .into(),
     ];
     if scenario.ego_estimator.algorithm == crate::scenario::EgoEstimatorAlgorithm::ImuBias {
@@ -780,12 +904,18 @@ fn send_blueprint(
         );
     }
     let plot_columns = match plot_views.len() {
-        5 | 6 => 3,
+        5..=7 => 3,
         _ => 4,
     };
     let plots = Grid::new(plot_views).with_grid_columns(plot_columns);
-    let root = Vertical::new([top.into(), sensors.into(), plots.into()])
-        .with_row_shares(vec![2.8, 1.8, 3.0]);
+    let root = if sensor_views.is_empty() {
+        Vertical::new([top.into(), plots.into()]).with_row_shares(vec![2.8, 3.0])
+    } else {
+        let sensor_columns = if sensor_views.len() == 1 { 1 } else { 2 };
+        let sensors = Grid::new(sensor_views).with_grid_columns(sensor_columns);
+        Vertical::new([top.into(), sensors.into(), plots.into()])
+            .with_row_shares(vec![2.8, 1.8, 3.0])
+    };
     Blueprint::new(root)
         .with_auto_views(false)
         .with_auto_layout(false)

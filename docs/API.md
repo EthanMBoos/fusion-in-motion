@@ -4,7 +4,7 @@ The messages in `proto/fusion.proto` match the planar simulator:
 
 ```text
 ImuSample + GpsFix -> EgoStateEstimate
-CameraFrame + LidarScan + EgoStateEstimate -> ObjectTrack
+CameraFrame + LidarScan + EgoStateEstimate -> ObjectTrackFrame
 EgoTruthState + ObjectTruthState -> scoring and display only
 ```
 
@@ -14,6 +14,10 @@ one-to-one assignment for the remaining pairs. Lidar can create a track because
 it measures range. Camera can update a track but cannot create one from a
 single direction measurement. `ObjectTrack.track_id` belongs to the tracker.
 Truth object IDs are read only by scoring and display code.
+
+`ObjectTrackFrame` contains the full tracker output at one estimate time. An
+empty frame means the tracker ran and produced no confirmed tracks. Individual
+tracks inherit the frame's estimate and availability times.
 
 Positions use the fixed local world frame. Vehicle x points forward, y points
 left, and yaw is positive counterclockwise. All sensors are at the vehicle
@@ -48,3 +52,7 @@ x, y, velocity x, velocity y
 contains vehicle truth, object truth, and simulated IMU bias. Normal estimation
 does not read truth. The purple truth-ego tracker is run separately as a scoring
 control.
+
+The tracker history JSON under `reports/baseline` records predictions,
+association decisions, updates, and track lifecycle events from the built-in
+tracker. It is not part of the external result API.

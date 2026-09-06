@@ -53,4 +53,4 @@ object_tracker:
   gate_sigma: 4.0
   # These control when a new track appears and when a missing track is removed.
   confirmation_hits: 2
-  max_missed_lidar_scans: 3
+  max_time_without_update_s: 0.6

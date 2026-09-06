@@ -83,9 +83,13 @@ message EgoStateEstimate {
 
 message ObjectTrack {
   string track_id = 1;
-  sint64 estimate_time_ns = 2;
-  sint64 available_time_ns = 3;
-  Vec2 position_world_m = 4;
-  Vec2 velocity_world_mps = 5;
-  repeated double state_covariance = 6;
+  Vec2 position_world_m = 2;
+  Vec2 velocity_world_mps = 3;
+  repeated double state_covariance = 4;
+}
+
+message ObjectTrackFrame {
+  sint64 estimate_time_ns = 1;
+  sint64 available_time_ns = 2;
+  repeated ObjectTrack tracks = 3;
 }

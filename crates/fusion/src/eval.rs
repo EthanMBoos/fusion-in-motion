@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use fusion_schema::messages::{
-    EgoStateEstimate, EgoTruthState, ImuBiasTruth, ObjectTrack, ObjectTruthState,
+    EgoStateEstimate, EgoTruthState, ImuBiasTruth, ObjectTrack, ObjectTrackFrame, ObjectTruthState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,10 @@ pub struct TrackMetrics {
     pub time_coverage_fraction: f64,
     pub invalid_output_count: usize,
     pub position_threshold_exceeded_count: usize,
+    pub missed_object_samples: usize,
+    pub false_track_samples: usize,
+    pub identity_switch_count: usize,
+    pub track_fragment_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,8 +59,8 @@ pub fn evaluate(
     object_truth: &[ObjectTruthState],
     imu_bias_truth: &[ImuBiasTruth],
     estimates: &[EgoStateEstimate],
-    estimated_ego_tracks: &[ObjectTrack],
-    truth_ego_tracks: &[ObjectTrack],
+    estimated_ego_tracks: &[ObjectTrackFrame],
+    truth_ego_tracks: &[ObjectTrackFrame],
 ) -> RunMetrics {
     let ego = evaluate_ego(scenario, ego_truth, imu_bias_truth, estimates);
     let tracks_with_estimated_ego = evaluate_tracks(
@@ -76,7 +80,7 @@ pub fn evaluate(
         EgoSource::Truth,
     );
     RunMetrics {
-        metric_version: "fusion-eval-3.0".to_owned(),
+        metric_version: "fusion-eval-4.0".to_owned(),
         estimated_ego_position_rmse_delta_m: tracks_with_estimated_ego
             .position_rmse_m
             .zip(tracks_with_truth_ego.position_rmse_m)
@@ -201,7 +205,7 @@ pub fn evaluate_tracks(
     ego_truth: &[EgoTruthState],
     object_truth: &[ObjectTruthState],
     ego_estimates: &[EgoStateEstimate],
-    tracks: &[ObjectTrack],
+    frames: &[ObjectTrackFrame],
     ego_source: EgoSource,
 ) -> TrackMetrics {
     let mut position_squared = 0.0;
@@ -211,156 +215,194 @@ pub fn evaluate_tracks(
     let mut matched = 0;
     let mut maximum_error: f64 = 0.0;
     let mut threshold_exceeded = 0;
-    let mut objects = BTreeMap::<String, (i64, i64, f64)>::new();
-    let truth_assignments = track_truth_assignments(
-        tracks,
-        object_truth,
-        scenario.metrics.max_truth_match_gap_ns,
-    );
-    for track in tracks {
-        let Some(truth_key) = truth_assignments.get(&track.track_id) else {
-            continue;
-        };
-        let Some(truth) = nearest_object_truth(
-            object_truth,
-            truth_key,
-            track.estimate_time_ns,
-            scenario.metrics.max_truth_match_gap_ns,
-        ) else {
-            continue;
-        };
-        let (Some(position), Some(velocity), Some(truth_position), Some(truth_velocity)) = (
-            track.position_world_m.as_ref(),
-            track.velocity_world_mps.as_ref(),
-            truth.position_world_m.as_ref(),
-            truth.velocity_world_mps.as_ref(),
-        ) else {
-            continue;
-        };
-        let position_error = (position.x - truth_position.x).hypot(position.y - truth_position.y);
-        let velocity_error = (velocity.x - truth_velocity.x).hypot(velocity.y - truth_velocity.y);
-        position_squared += position_error.powi(2);
-        velocity_squared += velocity_error.powi(2);
-        maximum_error = maximum_error.max(position_error);
-        threshold_exceeded +=
-            usize::from(position_error > scenario.metrics.track_divergence_position_error_m);
-        matched += 1;
-        objects
-            .entry(track.track_id.clone())
-            .and_modify(|range| {
-                if track.estimate_time_ns >= range.1 {
-                    range.1 = track.estimate_time_ns;
-                    range.2 = position_error;
-                }
-            })
-            .or_insert((
-                track.estimate_time_ns,
-                track.estimate_time_ns,
-                position_error,
-            ));
+    let mut track_ids = std::collections::BTreeSet::new();
+    let mut invalid = 0;
+    let mut missed_object_samples = 0;
+    let mut false_track_samples = 0;
+    let mut truth_sample_count = 0;
+    let mut latest_errors = BTreeMap::<String, (i64, f64)>::new();
+    let mut continuity = BTreeMap::<String, TruthContinuity>::new();
+    let mut identity_switch_count = 0;
+    let mut track_fragment_count = 0;
 
-        if let Some(relative_error) = relative_position_error(
-            track,
-            truth,
-            ego_truth,
-            ego_estimates,
-            ego_source,
+    for frame in frames {
+        track_ids.extend(frame.tracks.iter().map(|track| track.track_id.clone()));
+        let truth_at_time = object_truth_at_time(
+            object_truth,
+            frame.estimate_time_ns,
             scenario.metrics.max_truth_match_gap_ns,
-        ) {
-            relative_squared += relative_error.powi(2);
-            relative_matched += 1;
+        );
+        if truth_at_time.is_empty() {
+            invalid += frame.tracks.len();
+            continue;
+        }
+        let valid_tracks = frame
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| valid_track(track))
+            .collect::<Vec<_>>();
+        invalid += frame.tracks.len() - valid_tracks.len();
+        let assignments = frame_truth_assignments(
+            frame,
+            object_truth,
+            scenario.metrics.max_truth_match_gap_ns,
+            scenario.metrics.track_truth_match_max_distance_m,
+        );
+        false_track_samples += valid_tracks.len() - assignments.len();
+        missed_object_samples += truth_at_time.len() - assignments.len();
+        truth_sample_count += truth_at_time.len();
+
+        let matched_truth = assignments
+            .values()
+            .map(|truth_key| truth_key.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for truth_key in truth_at_time.keys() {
+            let state = continuity.entry(truth_key.clone()).or_default();
+            if !matched_truth.contains(truth_key.as_str()) {
+                state.matched_previous_frame = false;
+            }
+        }
+
+        for (track_index, truth_key) in assignments {
+            let track = &frame.tracks[track_index];
+            let truth = truth_at_time[&truth_key];
+            let position = track.position_world_m.as_ref().expect("validated track");
+            let velocity = track.velocity_world_mps.as_ref().expect("validated track");
+            let truth_position = truth
+                .position_world_m
+                .as_ref()
+                .expect("matched truth has position");
+            let truth_velocity = truth
+                .velocity_world_mps
+                .as_ref()
+                .expect("matched truth has velocity");
+            let position_error =
+                (position.x - truth_position.x).hypot(position.y - truth_position.y);
+            let velocity_error =
+                (velocity.x - truth_velocity.x).hypot(velocity.y - truth_velocity.y);
+            position_squared += position_error.powi(2);
+            velocity_squared += velocity_error.powi(2);
+            maximum_error = maximum_error.max(position_error);
+            threshold_exceeded +=
+                usize::from(position_error > scenario.metrics.track_divergence_position_error_m);
+            matched += 1;
+            latest_errors
+                .entry(truth_key.clone())
+                .and_modify(|latest| {
+                    if frame.estimate_time_ns >= latest.0 {
+                        *latest = (frame.estimate_time_ns, position_error);
+                    }
+                })
+                .or_insert((frame.estimate_time_ns, position_error));
+
+            let state = continuity.entry(truth_key).or_default();
+            if state.matched_previous_frame
+                && state.last_track_id.as_deref() != Some(track.track_id.as_str())
+            {
+                identity_switch_count += 1;
+            }
+            if state.ever_matched && !state.matched_previous_frame {
+                track_fragment_count += 1;
+            }
+            state.ever_matched = true;
+            state.matched_previous_frame = true;
+            state.last_track_id = Some(track.track_id.clone());
+
+            if let Some(relative_error) = relative_position_error(
+                track,
+                truth,
+                frame.estimate_time_ns,
+                ego_truth,
+                ego_estimates,
+                ego_source,
+                scenario.metrics.max_truth_match_gap_ns,
+            ) {
+                relative_squared += relative_error.powi(2);
+                relative_matched += 1;
+            }
         }
     }
-    let truth_duration = ego_truth.last().map_or(0, |state| state.time_ns)
-        - ego_truth.first().map_or(0, |state| state.time_ns);
-    let time_coverage_fraction = if objects.is_empty() || truth_duration <= 0 {
-        0.0
-    } else {
-        objects
-            .values()
-            .map(|(first, last, _)| (last - first) as f64 / truth_duration as f64)
-            .sum::<f64>()
-            / objects.len() as f64
-    };
-    let final_position_error_m = (!objects.is_empty()).then(|| {
-        (objects
-            .values()
-            .map(|(_, _, final_error)| final_error.powi(2))
-            .sum::<f64>()
-            / objects.len() as f64)
-            .sqrt()
+
+    let final_position_error_m = (!latest_errors.is_empty()).then(|| {
+        rms(
+            latest_errors.values().map(|(_, error)| error.powi(2)).sum(),
+            latest_errors.len(),
+        )
     });
     TrackMetrics {
         ego_source: ego_source.label().to_owned(),
-        track_samples: tracks.len(),
+        track_samples: frames.iter().map(|frame| frame.tracks.len()).sum(),
         matched_samples: matched,
-        track_count: objects.len(),
+        track_count: track_ids.len(),
         position_rmse_m: (matched > 0).then(|| rms(position_squared, matched)),
         velocity_rmse_mps: (matched > 0).then(|| rms(velocity_squared, matched)),
         relative_position_rmse_m: (relative_matched > 0)
             .then(|| rms(relative_squared, relative_matched)),
         final_position_error_m,
         maximum_position_error_m: (matched > 0).then_some(maximum_error),
-        time_coverage_fraction,
-        invalid_output_count: tracks.len() - matched,
+        time_coverage_fraction: if truth_sample_count > 0 {
+            matched as f64 / truth_sample_count as f64
+        } else {
+            0.0
+        },
+        invalid_output_count: invalid,
         position_threshold_exceeded_count: threshold_exceeded,
+        missed_object_samples,
+        false_track_samples,
+        identity_switch_count,
+        track_fragment_count,
     }
 }
 
-pub(crate) fn track_truth_assignments(
-    tracks: &[ObjectTrack],
+#[derive(Default)]
+struct TruthContinuity {
+    last_track_id: Option<String>,
+    ever_matched: bool,
+    matched_previous_frame: bool,
+}
+
+pub(crate) fn frame_truth_assignments(
+    frame: &ObjectTrackFrame,
     truth: &[ObjectTruthState],
     max_gap_ns: i64,
-) -> BTreeMap<String, String> {
-    let track_ids = tracks
+    max_distance_m: f64,
+) -> BTreeMap<usize, String> {
+    let track_indices = frame
+        .tracks
         .iter()
-        .map(|track| track.track_id.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
+        .enumerate()
+        .filter(|(_, track)| valid_track(track))
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    let truth_ids = truth
-        .iter()
-        .map(|state| state.track_key.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    if track_ids.is_empty() || truth_ids.is_empty() {
+    let truth_at_time = object_truth_at_time(truth, frame.estimate_time_ns, max_gap_ns);
+    let truth_ids = truth_at_time.keys().cloned().collect::<Vec<_>>();
+    if track_indices.is_empty() || truth_ids.is_empty() {
         return BTreeMap::new();
     }
 
-    let unmatched_cost = 1.0e12;
-    let invalid_cost = 1.0e18;
-    let mut costs = Vec::with_capacity(track_ids.len());
-    for track_id in &track_ids {
-        let samples = tracks
-            .iter()
-            .filter(|track| &track.track_id == track_id)
-            .collect::<Vec<_>>();
-        let mut row = Vec::with_capacity(truth_ids.len() + track_ids.len());
+    let max_match_cost = max_distance_m.powi(2);
+    let unmatched_cost = max_match_cost + 1.0;
+    let invalid_cost = unmatched_cost * 1.0e6;
+    let mut costs = Vec::with_capacity(track_indices.len());
+    for &track_index in &track_indices {
+        let track = &frame.tracks[track_index];
+        let position = track.position_world_m.as_ref().expect("validated track");
+        let mut row = Vec::with_capacity(truth_ids.len() + track_indices.len());
         for truth_id in &truth_ids {
-            let mut squared = 0.0;
-            let mut matched = 0;
-            for track in &samples {
-                let (Some(position), Some(state)) = (
-                    track.position_world_m.as_ref(),
-                    nearest_object_truth(truth, truth_id, track.estimate_time_ns, max_gap_ns),
-                ) else {
-                    continue;
-                };
-                let Some(truth_position) = state.position_world_m.as_ref() else {
-                    continue;
-                };
-                squared += (position.x - truth_position.x).powi(2)
-                    + (position.y - truth_position.y).powi(2);
-                matched += 1;
-            }
-            row.push(if matched == 0 {
-                invalid_cost
+            let truth_position = truth_at_time[truth_id]
+                .position_world_m
+                .as_ref()
+                .expect("matched truth has position");
+            let squared =
+                (position.x - truth_position.x).powi(2) + (position.y - truth_position.y).powi(2);
+            row.push(if squared <= max_match_cost {
+                squared
             } else {
-                squared / matched as f64
+                invalid_cost
             });
         }
-        row.extend(std::iter::repeat_n(unmatched_cost, track_ids.len()));
+        row.extend(std::iter::repeat_n(unmatched_cost, track_indices.len()));
         costs.push(row);
     }
 
@@ -368,20 +410,49 @@ pub(crate) fn track_truth_assignments(
         .into_iter()
         .enumerate()
         .filter(|(track_index, truth_index)| {
-            *truth_index < truth_ids.len() && costs[*track_index][*truth_index] < unmatched_cost
+            *truth_index < truth_ids.len() && costs[*track_index][*truth_index] <= max_match_cost
         })
         .map(|(track_index, truth_index)| {
-            (
-                track_ids[track_index].clone(),
-                truth_ids[truth_index].clone(),
-            )
+            (track_indices[track_index], truth_ids[truth_index].clone())
         })
         .collect()
+}
+
+fn object_truth_at_time(
+    truth: &[ObjectTruthState],
+    time_ns: i64,
+    max_gap_ns: i64,
+) -> BTreeMap<String, &ObjectTruthState> {
+    truth
+        .iter()
+        .map(|state| state.track_key.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|track_key| {
+            let state = nearest_object_truth(truth, track_key, time_ns, max_gap_ns)?;
+            state
+                .position_world_m
+                .as_ref()
+                .zip(state.velocity_world_mps.as_ref())?;
+            Some((track_key.to_owned(), state))
+        })
+        .collect()
+}
+
+fn valid_track(track: &ObjectTrack) -> bool {
+    let (Some(position), Some(velocity)) = (&track.position_world_m, &track.velocity_world_mps)
+    else {
+        return false;
+    };
+    [position.x, position.y, velocity.x, velocity.y]
+        .into_iter()
+        .all(f64::is_finite)
 }
 
 fn relative_position_error(
     track: &ObjectTrack,
     object_truth: &ObjectTruthState,
+    time_ns: i64,
     ego_truth: &[EgoTruthState],
     ego_estimates: &[EgoStateEstimate],
     ego_source: EgoSource,
@@ -389,7 +460,7 @@ fn relative_position_error(
 ) -> Option<f64> {
     let track_position = track.position_world_m.as_ref()?;
     let object_position = object_truth.position_world_m.as_ref()?;
-    let truth_ego = nearest_ego_truth(ego_truth, track.estimate_time_ns, max_gap_ns)?;
+    let truth_ego = nearest_ego_truth(ego_truth, time_ns, max_gap_ns)?;
     let truth_pose = truth_ego.pose_world.as_ref()?;
     let truth_ego_position = truth_pose.position.as_ref()?;
     let (ego_x, ego_y, ego_yaw) = match ego_source {
@@ -399,7 +470,7 @@ fn relative_position_error(
             truth_pose.yaw_rad,
         ),
         EgoSource::Estimated => {
-            let estimate = nearest_estimate(ego_estimates, track.estimate_time_ns, max_gap_ns)?;
+            let estimate = nearest_estimate(ego_estimates, time_ns, max_gap_ns)?;
             let pose = estimate.pose_world.as_ref()?;
             let position = pose.position.as_ref()?;
             (position.x, position.y, pose.yaw_rad)
@@ -479,5 +550,85 @@ fn coverage(first: Option<i64>, last: Option<i64>, duration_ns: i64) -> f64 {
             ((last - first) as f64 / duration_ns as f64).clamp(0.0, 1.0)
         }
         _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fusion_schema::messages::Vec2;
+
+    fn track(track_id: &str, x: f64) -> ObjectTrack {
+        ObjectTrack {
+            track_id: track_id.to_owned(),
+            position_world_m: Some(Vec2 { x, y: 0.0 }),
+            velocity_world_mps: Some(Vec2 { x: 0.0, y: 0.0 }),
+            state_covariance: vec![0.0; 16],
+        }
+    }
+
+    fn truth(track_key: &str, time_ns: i64, x: f64) -> ObjectTruthState {
+        ObjectTruthState {
+            track_key: track_key.to_owned(),
+            time_ns,
+            position_world_m: Some(Vec2 { x, y: 0.0 }),
+            velocity_world_mps: Some(Vec2 { x: 0.0, y: 0.0 }),
+        }
+    }
+
+    #[test]
+    fn time_local_matching_counts_switches_fragments_misses_and_false_tracks() {
+        let mut scenario: ResolvedScenario = serde_yaml_ng::from_str(
+            "root_seed: 1\nworld: { objects: [] }\ntrajectory:\n  - { id: test, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }\n",
+        )
+        .unwrap();
+        scenario.metrics.track_truth_match_max_distance_m = 1.0;
+        let times = [0, 1_000_000, 2_000_000, 3_000_000];
+        let object_truth = times
+            .into_iter()
+            .flat_map(|time_ns| [truth("a", time_ns, 0.0), truth("b", time_ns, 10.0)])
+            .collect::<Vec<_>>();
+        let frames = vec![
+            ObjectTrackFrame {
+                estimate_time_ns: times[0],
+                available_time_ns: times[0],
+                tracks: vec![track("track-1", 0.0), track("track-2", 10.0)],
+            },
+            ObjectTrackFrame {
+                estimate_time_ns: times[1],
+                available_time_ns: times[1],
+                tracks: vec![track("track-1", 10.0), track("track-2", 0.0)],
+            },
+            ObjectTrackFrame {
+                estimate_time_ns: times[2],
+                available_time_ns: times[2],
+                tracks: vec![track("track-1", 10.0)],
+            },
+            ObjectTrackFrame {
+                estimate_time_ns: times[3],
+                available_time_ns: times[3],
+                tracks: vec![
+                    track("track-1", 10.0),
+                    track("track-3", 0.0),
+                    track("false", 50.0),
+                ],
+            },
+        ];
+
+        let metrics = evaluate_tracks(
+            &scenario,
+            &[],
+            &object_truth,
+            &[],
+            &frames,
+            EgoSource::Truth,
+        );
+        assert_eq!(metrics.matched_samples, 7);
+        assert_eq!(metrics.missed_object_samples, 1);
+        assert_eq!(metrics.false_track_samples, 1);
+        assert_eq!(metrics.identity_switch_count, 2);
+        assert_eq!(metrics.track_fragment_count, 1);
+        assert_eq!(metrics.time_coverage_fraction, 7.0 / 8.0);
+        assert_eq!(metrics.invalid_output_count, 0);
     }
 }

@@ -11,8 +11,9 @@ Work through them in this order:
 2. [`imu_bias.yaml`](../experiments/imu_bias.yaml)
 3. [`outliers.yaml`](../experiments/outliers.yaml)
 4. [`timing.yaml`](../experiments/timing.yaml)
-5. [`perception.yaml`](../experiments/perception.yaml)
-6. [`association.yaml`](../experiments/association.yaml)
+5. [`tracker_update.yaml`](../experiments/tracker_update.yaml)
+6. [`perception.yaml`](../experiments/perception.yaml)
+7. [`association.yaml`](../experiments/association.yaml)
 
 Run one with:
 
@@ -50,6 +51,8 @@ tracks/estimated-ego.mcap
 tracks/truth-ego.mcap
 reports/baseline/metrics.json
 reports/baseline/summary.md
+reports/baseline/tracker-history-estimated-ego.json
+reports/baseline/tracker-history-truth-ego.json
 reports/baseline/visualization.rrd
 ```
 

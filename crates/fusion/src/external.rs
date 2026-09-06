@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, ensure};
-use fusion_schema::messages::{EgoStateEstimate, ObjectTrack, Vec2};
+use fusion_schema::messages::{EgoStateEstimate, ObjectTrack, ObjectTrackFrame, Vec2};
 
 use crate::{math, tracker::EgoSource};
 
@@ -63,7 +63,7 @@ pub fn read_tracks_csv(
     _tracker_id: &str,
     _world_frame: &str,
     _ego_source: EgoSource,
-) -> Result<Vec<ObjectTrack>> {
+) -> Result<Vec<ObjectTrackFrame>> {
     let (columns, rows) = read_rows(path)?;
     for required in [
         "estimate_time_ns",
@@ -78,7 +78,7 @@ pub fn read_tracks_csv(
             "track CSV is missing {required}"
         );
     }
-    let mut tracks = Vec::new();
+    let mut frames = Vec::<ObjectTrackFrame>::new();
     for (line, fields) in rows {
         let estimate_time_ns = required::<i64>(&columns, &fields, "estimate_time_ns")?;
         let available_time_ns =
@@ -91,23 +91,41 @@ pub fn read_tracks_csv(
             [x, y, vx, vy].iter().all(|value: &f64| value.is_finite()),
             "track CSV line {line} contains a non-finite value"
         );
-        tracks.push(ObjectTrack {
+        let track = ObjectTrack {
             track_id: text(&columns, &fields, "track_id")?.to_owned(),
-            estimate_time_ns,
-            available_time_ns,
             position_world_m: Some(Vec2 { x, y }),
             velocity_world_mps: Some(Vec2 { x: vx, y: vy }),
             state_covariance: Vec::new(),
-        });
+        };
+        if let Some(frame) = frames.last_mut().filter(|frame| {
+            frame.estimate_time_ns == estimate_time_ns
+                && frame.available_time_ns == available_time_ns
+        }) {
+            ensure!(
+                frame
+                    .tracks
+                    .iter()
+                    .all(|existing| existing.track_id != track.track_id),
+                "track CSV line {line} repeats {} in one frame",
+                track.track_id
+            );
+            frame.tracks.push(track);
+        } else {
+            ensure!(
+                frames
+                    .last()
+                    .is_none_or(|frame| estimate_time_ns >= frame.estimate_time_ns),
+                "track CSV times must not go backward"
+            );
+            frames.push(ObjectTrackFrame {
+                estimate_time_ns,
+                available_time_ns,
+                tracks: vec![track],
+            });
+        }
     }
-    ensure!(!tracks.is_empty(), "track CSV contains no rows");
-    ensure!(
-        tracks
-            .windows(2)
-            .all(|pair| pair[0].estimate_time_ns <= pair[1].estimate_time_ns),
-        "track CSV times must not go backward"
-    );
-    Ok(tracks)
+    ensure!(!frames.is_empty(), "track CSV contains no rows");
+    Ok(frames)
 }
 
 fn read_rows(path: &Path) -> Result<(Columns, Rows)> {

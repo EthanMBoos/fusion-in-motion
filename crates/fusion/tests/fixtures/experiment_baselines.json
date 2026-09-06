@@ -68,6 +68,27 @@
         "replayed_measurements": 31,
         "discarded_measurements": 0
       }
+    },
+    "tracker_update": {
+      "metrics": {
+        "tracks_with_truth_ego": {
+          "position_rmse_m": 0.17302274511591498,
+          "time_coverage_fraction": 1.0,
+          "missed_object_samples": 0,
+          "false_track_samples": 0,
+          "identity_switch_count": 0,
+          "track_fragment_count": 0
+        }
+      },
+      "estimated_ego_tracker_updates": {
+        "candidate_pairs": 5,
+        "gated_out_pairs": 0,
+        "selected_associations": 5,
+        "missed_updates": 0,
+        "created_tracks": 1,
+        "confirmed_tracks": 1,
+        "deleted_tracks": 0
+      }
     }
   },
   "sweeps": {
@@ -101,7 +122,7 @@
           "cases": 5,
           "mean_truth_ego_track_rmse_m": 0.5725105744493991,
           "stddev_truth_ego_track_rmse_m": 0.14591197166989572,
-          "mean_truth_ego_track_time_coverage_fraction": 0.85,
+          "mean_truth_ego_track_time_coverage_fraction": 0.9125,
           "stddev_truth_ego_track_time_coverage_fraction": 0.055901699437494734
         },
         {
@@ -109,8 +130,8 @@
           "cases": 5,
           "mean_truth_ego_track_rmse_m": 0.18705428539941,
           "stddev_truth_ego_track_rmse_m": 0.13171905939874673,
-          "mean_truth_ego_track_time_coverage_fraction": 0.93,
-          "stddev_truth_ego_track_time_coverage_fraction": 0.002795084971874727
+          "mean_truth_ego_track_time_coverage_fraction": 0.9363636363636363,
+          "stddev_truth_ego_track_time_coverage_fraction": 0.0025409863380679654
         }
       ]
     }

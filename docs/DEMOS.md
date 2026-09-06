@@ -30,15 +30,10 @@ Reference: [Stone Soup Kalman filter tutorial](https://stonesoup.readthedocs.io/
 
 Use truth ego for demos 1–8. Add GPS/IMU position error in demo 9.
 
-### 1. Predict and update one track — core work
+### 1. Predict and update one track — ready now
 
-Track one object with lidar. Use one detection per scan, perfect detection,
-immediate confirmation, and no deletion during the run. The first lidar return
-starts the track. Association is unambiguous.
-
-The track output currently contains only the state after each sensor batch.
-Record the prediction too, then show the prediction, correction, error, and
-covariance.
+[`tracker_update.yaml`](../experiments/tracker_update.yaml) shows the prediction,
+correction, error, covariance, and NIS for one lidar track.
 
 References: [Kalman filter](https://stonesoup.readthedocs.io/en/stable/auto_tutorials/01_KalmanFilterTutorial.html)
 and [EKF](https://stonesoup.readthedocs.io/en/stable/auto_tutorials/02_ExtendedKalmanFilterTutorial.html).
@@ -72,9 +67,9 @@ Add false lidar returns and a short outage around one established track. Stop
 unmatched detections from starting tracks with an explicit initiation setting.
 Compare a loose and tight gate.
 
-Record candidate detections, NIS, the gate, gated-out pairs, the selected
-detection, rejected updates, and missed updates. `rejected_updates` currently
-does not include pairs removed during assignment gating.
+Use the tracker history to inspect each candidate's NIS, gate result, selected
+detection, rejected updates, and missed updates. `rejected_updates` does not
+include pairs removed during assignment gating.
 
 Reference: [Stone Soup single-target clutter tutorial](https://stonesoup.readthedocs.io/en/stable/auto_tutorials/05_DataAssociation-Clutter.html).
 
@@ -85,9 +80,8 @@ perfect detection, immediate confirmation, and no deletion. Add a greedy
 nearest-neighbor option and compare it with the current global assignment on
 the same detections. Show the chosen links and costs through the crossing.
 
-Add time-local truth matching before reporting identity switches. The current
-whole-run assignment can hide a swap. Add missed detections and false returns
-only after the clean crossing works.
+Use the time-local truth matching when reporting identity switches. Add missed
+detections and false returns only after the clean crossing works.
 
 References: [crossing tutorial](https://stonesoup.readthedocs.io/en/stable/auto_tutorials/06_DataAssociation-MultiTargetTutorial.html),
 [greedy assignment](https://github.com/dstl/Stone-Soup/blob/main/stonesoup/dataassociator/neighbour.py#L58-L98),
@@ -99,9 +93,9 @@ Start with lidar only. Include an object entering and leaving view, a few false
 returns at the same location, a short outage the track survives, and a longer
 outage followed by re-entry. Re-entry after deletion creates a new track ID.
 
-Record tentative, confirmed, missed, and deleted events. Report confirmation
-delay, false-track time, deletion delay, continuity through the short outage,
-and new-track delay after re-entry.
+Use the recorded tentative, confirmed, missed, and deleted events to report
+confirmation delay, false-track time, deletion delay, continuity through the
+short outage, and new-track delay after re-entry.
 
 Choose and test the lifecycle order first. Stone Soup uses update, delete, then
 initiate in its [tracker loop](https://github.com/dstl/Stone-Soup/blob/main/stonesoup/tracker/simple.py#L175-L222)
@@ -188,18 +182,6 @@ fusion, and sensor management. Radar models, static-landmark localization, and
 Stone Soup's plotting code are outside this plan.
 
 ## Core implementation todo
-
-### Tracker evaluation and diagnostics
-
-- [ ] Match tracks to truth at each timestamp.
-- [ ] Count missed objects, false tracks, identity switches, and fragments.
-- [ ] Record association candidates, NIS, gate results, and selected matches.
-- [ ] Record tentative, confirmed, missed, and deleted track events.
-- [ ] Record predicted and post-update states separately.
-- [ ] Use these records in metrics, reports, and Rerun.
-
-Keep these as small internal types. Do not add them all to the public protobuf
-API.
 
 ### Simulator and baseline comparisons
 
