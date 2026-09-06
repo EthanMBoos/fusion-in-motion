@@ -1,7 +1,8 @@
 # Fusion in Motion
 
-Fusion in Motion is a simulator for testing sensor fusion and object tracking.
-It models two connected systems:
+Fusion in Motion is a simulator for building and inspecting state-estimation
+and tracking experiments. The current planar starter models two connected
+systems:
 
 ```text
 GPS + IMU -> vehicle state
@@ -37,8 +38,7 @@ The starter keeps latency, IMU bias, missed detections, and outlier gating out
 of the way. The files under [`experiments/`](experiments/) add those effects one
 at a time. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for the sequence.
 
-[docs/REFERENCES.md](docs/REFERENCES.md) contains the simulator and benchmark
-review, literature, and recommended demo roadmap.
+Development plans are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Development
 

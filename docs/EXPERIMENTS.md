@@ -3,6 +3,8 @@
 Each study is a YAML file. Its opening comments state the question and what to
 watch. Comments beside individual settings suggest edits.
 
+Planned demos are in [`DEMOS.md`](DEMOS.md).
+
 Work through them in this order:
 
 1. [`initial.yaml`](../experiments/initial.yaml)
