@@ -2,9 +2,9 @@ use anyhow::{Result, ensure};
 use fusion_schema::messages::{EgoStateEstimate, GpsFix, ImuSample};
 use nalgebra::{Matrix2, SMatrix, SVector, Vector2};
 
-use crate::{math, scenario::EgoEstimatorConfig};
+use crate::math;
 
-use super::{ImuProcessNoise, UpdateResult};
+use super::{EstimatorSettings, ImuProcessNoise, UpdateResult};
 
 const STATE_DIMENSION: usize = 4;
 pub(super) const STATE_NAMES: [&str; STATE_DIMENSION] = [
@@ -68,18 +68,16 @@ pub(super) struct BasicEkf {
 }
 
 impl BasicEkf {
-    pub(super) fn new(config: &EgoEstimatorConfig) -> Self {
-        let stddevs = [
-            config.initial_position_stddev_m,
-            config.initial_position_stddev_m,
-            config.initial_yaw_stddev_rad,
-            config.initial_speed_stddev_mps,
+    pub(super) fn new(settings: &EstimatorSettings) -> Self {
+        let variances = [
+            settings.initial_position_variance_m2,
+            settings.initial_position_variance_m2,
+            settings.initial_yaw_variance_rad2,
+            settings.initial_speed_variance_m2ps2,
         ];
         Self {
             state: State::default(),
-            covariance: StateCovariance::from_diagonal(&SVector::from_fn(|index, _| {
-                stddevs[index].powi(2)
-            })),
+            covariance: StateCovariance::from_diagonal(&SVector::from_row_slice(&variances)),
             last_imu_stamp_ns: None,
         }
     }
@@ -147,11 +145,7 @@ impl BasicEkf {
         Ok(())
     }
 
-    pub(super) fn update_gps(
-        &mut self,
-        config: &EgoEstimatorConfig,
-        fix: &GpsFix,
-    ) -> Result<UpdateResult> {
+    pub(super) fn update_gps(&mut self, fix: &GpsFix, gps_gate_sigma: f64) -> Result<UpdateResult> {
         let position = fix
             .position_world_m
             .as_ref()
@@ -163,7 +157,7 @@ impl BasicEkf {
         );
         let residual = Vector2::new(position.x, position.y) - self.state.position_world_m;
         let measurement_covariance = Matrix2::identity() * fix.horizontal_position_variance_m2;
-        Ok(self.apply_position_update(residual, measurement_covariance, config.gps_gate_sigma))
+        Ok(self.apply_position_update(residual, measurement_covariance, gps_gate_sigma))
     }
 
     fn apply_position_update(
@@ -253,6 +247,10 @@ mod tests {
     use super::*;
     use fusion_schema::messages::MeasurementTime;
 
+    fn settings() -> EstimatorSettings {
+        EstimatorSettings::resolve(&Default::default(), &Default::default())
+    }
+
     fn imu(time_s: i64, yaw_rate_radps: f64, forward_acceleration_mps2: f64) -> ImuSample {
         ImuSample {
             time: Some(MeasurementTime {
@@ -266,7 +264,7 @@ mod tests {
 
     #[test]
     fn propagation_matches_constant_acceleration_and_yaw_rate() -> Result<()> {
-        let mut filter = BasicEkf::new(&EgoEstimatorConfig::default());
+        let mut filter = BasicEkf::new(&settings());
         let noise = ImuProcessNoise {
             gyro_white_noise_density_radps_sqrt_hz: 0.0,
             accel_white_noise_density_mps2_sqrt_hz: 0.0,
@@ -287,7 +285,7 @@ mod tests {
 
     #[test]
     fn gps_update_keeps_covariance_symmetric_and_positive_definite() {
-        let mut filter = BasicEkf::new(&EgoEstimatorConfig::default());
+        let mut filter = BasicEkf::new(&settings());
         filter.covariance = StateCovariance::identity();
 
         assert!(matches!(
@@ -302,7 +300,7 @@ mod tests {
 
     #[test]
     fn gps_gate_rejects_an_outlier_without_changing_the_filter() {
-        let mut filter = BasicEkf::new(&EgoEstimatorConfig::default());
+        let mut filter = BasicEkf::new(&settings());
         filter.covariance = StateCovariance::identity();
         let original_state = filter.state;
         let original_covariance = filter.covariance;

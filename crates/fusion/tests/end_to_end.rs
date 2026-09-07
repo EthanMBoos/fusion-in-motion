@@ -318,10 +318,8 @@ fn sensor_randomness_is_independent_and_perception_cannot_change_ego() -> Result
     let (changed_ego, _) = split(&changed_perception.measurements);
     assert_eq!(baseline_ego, changed_ego);
 
-    let baseline_run =
-        estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &baseline_ego)?;
-    let changed_run =
-        estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &changed_ego)?;
+    let baseline_run = estimator::run(&scenario.ego_estimator, &scenario.imu, &baseline_ego)?;
+    let changed_run = estimator::run(&scenario.ego_estimator, &scenario.imu, &changed_ego)?;
     assert_eq!(baseline_run.estimates, changed_run.estimates);
     Ok(())
 }
@@ -331,8 +329,7 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
     let scenario = scenario::load_and_resolve(&starter_experiment())?;
     let generated = sensor::generate(&scenario)?;
     let (ego_measurements, perception) = split(&generated.measurements);
-    let ego_run =
-        estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
+    let ego_run = estimator::run(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
     let estimated = tracker::run(
         &scenario.object_tracker,
         &perception,
@@ -502,8 +499,8 @@ fn gps_reduces_position_drift() -> Result<()> {
         .filter(|measurement| matches!(measurement, EgoMeasurement::Imu(_)))
         .cloned()
         .collect::<Vec<_>>();
-    let fused = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &with_gps)?;
-    let drifting = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &imu_only)?;
+    let fused = estimator::run(&scenario.ego_estimator, &scenario.imu, &with_gps)?;
+    let drifting = estimator::run(&scenario.ego_estimator, &scenario.imu, &imu_only)?;
     let truth = generated
         .ego_truth_states
         .last()
@@ -550,7 +547,7 @@ fn gps_outlier_is_rejected_when_gating_is_enabled() -> Result<()> {
         })
         .unwrap();
     fix.position_world_m.as_mut().unwrap().x += 1_000.0;
-    let run = estimator::run_baseline(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
+    let run = estimator::run(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
     assert_eq!(run.gps_diagnostics.attempted_fixes, gps_fix_count);
     assert_eq!(
         run.gps_diagnostics.accepted_fixes
@@ -586,7 +583,7 @@ fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     assert_eq!(starter.gps.outlier_probability, 0.0);
     let generated = sensor::generate(&starter)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(&starter.ego_estimator, &starter.imu, &measurements)?;
+    let run = estimator::run(&starter.ego_estimator, &starter.imu, &measurements)?;
     assert!(run.estimates.iter().all(|estimate| {
         estimate.state_covariance.len() == 16
             && estimate.gyro_bias_z_radps.is_none()
@@ -600,7 +597,7 @@ fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     );
     let generated = sensor::generate(&bias)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(&bias.ego_estimator, &bias.imu, &measurements)?;
+    let run = estimator::run(&bias.ego_estimator, &bias.imu, &measurements)?;
     assert!(
         run.estimates
             .iter()
@@ -618,13 +615,13 @@ fn advanced_experiments_turn_on_one_named_effect() -> Result<()> {
     assert!(!timing.object_tracker.timing_compensation);
     let generated = sensor::generate(&timing)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(&timing.ego_estimator, &timing.imu, &measurements)?;
+    let run = estimator::run(&timing.ego_estimator, &timing.imu, &measurements)?;
     assert!(run.timing.replayed_measurements > 0);
 
     let outliers = scenario::load_and_resolve(&experiment("outliers.yaml"))?;
     let generated = sensor::generate(&outliers)?;
     let (measurements, _) = split(&generated.measurements);
-    let run = estimator::run_baseline(&outliers.ego_estimator, &outliers.imu, &measurements)?;
+    let run = estimator::run(&outliers.ego_estimator, &outliers.imu, &measurements)?;
     assert!(run.gps_diagnostics.rejected_fixes > 0);
     Ok(())
 }

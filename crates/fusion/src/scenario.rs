@@ -196,6 +196,26 @@ pub enum EgoEstimatorAlgorithm {
     ImuBias,
 }
 
+impl EgoEstimatorAlgorithm {
+    pub const fn estimates_imu_bias(self) -> bool {
+        matches!(self, Self::ImuBias)
+    }
+
+    pub const fn state_dimension(self) -> usize {
+        match self {
+            Self::Basic => 4,
+            Self::ImuBias => 6,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::ImuBias => "imu_bias",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EgoEstimatorConfig {

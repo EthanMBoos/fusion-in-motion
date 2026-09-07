@@ -17,7 +17,7 @@ use mcap::{Writer, records::MessageHeader};
 use prost::Message;
 
 use crate::{
-    estimator::{BaselineAssumptions, GpsDiagnostics, TimingDiagnostics},
+    estimator::{EstimatorAssumptions, GpsDiagnostics, TimingDiagnostics},
     eval::RunMetrics,
     scenario::{ResolvedScenario, canonical_yaml},
     tracker::{TrackerDiagnostics, TrackerHistory},
@@ -237,7 +237,7 @@ pub fn write_reports(
     gps_diagnostics: &GpsDiagnostics,
     tracker_estimated_diagnostics: &TrackerDiagnostics,
     tracker_truth_diagnostics: &TrackerDiagnostics,
-    assumptions: &BaselineAssumptions,
+    assumptions: &EstimatorAssumptions,
 ) -> Result<()> {
     let report_dir = output.join("reports/baseline");
     let json = serde_json::json!({
@@ -263,10 +263,11 @@ pub fn write_reports(
         "# Run result\n\n\
          GPS and IMU estimate the vehicle. Camera and lidar track objects.\n\n\
          ## Vehicle\n\n\
-         Position RMSE: {:.3} m  \nHeading RMSE: {:.3} rad  \nGPS fixes accepted/rejected/invalid: {}/{}/{}\n\n\
+         Estimator: {}  \nPosition RMSE: {:.3} m  \nHeading RMSE: {:.3} rad  \nGPS fixes accepted/rejected/invalid: {}/{}/{}\n\n\
          ## Objects\n\n\
          Truth ego position RMSE: {truth_ego_track_rmse}  \nEstimated ego position RMSE: {estimated_ego_track_rmse}  \nCost of estimated ego: {ego_cost}\n\n\
          Estimated-ego associations, camera/lidar: {}/{}  \nUnmatched camera/lidar detections: {}/{}  \nTracks created/confirmed/deleted: {}/{}/{}\n",
+        assumptions.algorithm.name(),
         metrics.ego.position_rmse_m,
         metrics.ego.yaw_rmse_rad,
         gps_diagnostics.accepted_fixes,

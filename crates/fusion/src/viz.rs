@@ -73,7 +73,8 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::new(format!(
-            "# Fusion in Motion — {run_name}\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nTracker update: gray prediction, purple correction, and 95% uncertainty outlines use the true vehicle pose.{sensor_guide}"
+            "# Fusion in Motion — {run_name}\n\nVehicle estimator: {}.\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nTracker update: gray prediction, purple correction, and 95% uncertainty outlines use the true vehicle pose.{sensor_guide}",
+            scenario.ego_estimator.algorithm.name(),
         )),
     )?;
     log_styles(&rec)?;
@@ -876,7 +877,7 @@ fn send_blueprint(
             .with_origin("plots/tracker")
             .into(),
     ];
-    if scenario.ego_estimator.algorithm == crate::scenario::EgoEstimatorAlgorithm::ImuBias {
+    if scenario.ego_estimator.algorithm.estimates_imu_bias() {
         plot_views.push(
             TimeSeriesView::new("Gyro bias")
                 .with_origin("plots/bias/gyro")

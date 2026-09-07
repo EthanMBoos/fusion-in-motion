@@ -2,9 +2,9 @@ use anyhow::{Result, ensure};
 use fusion_schema::messages::{EgoStateEstimate, GpsFix, ImuSample};
 use nalgebra::{Matrix2, SMatrix, SVector, Vector2};
 
-use crate::{math, scenario::EgoEstimatorConfig};
+use crate::math;
 
-use super::{ImuProcessNoise, UpdateResult};
+use super::{EstimatorSettings, ImuProcessNoise, UpdateResult};
 
 const STATE_DIMENSION: usize = 6;
 pub(super) const STATE_NAMES: [&str; STATE_DIMENSION] = [
@@ -78,20 +78,18 @@ pub(super) struct ImuBiasEkf {
 }
 
 impl ImuBiasEkf {
-    pub(super) fn new(config: &EgoEstimatorConfig) -> Self {
-        let stddevs = [
-            config.initial_position_stddev_m,
-            config.initial_position_stddev_m,
-            config.initial_yaw_stddev_rad,
-            config.initial_speed_stddev_mps,
-            config.initial_gyro_bias_stddev_radps,
-            config.initial_accel_bias_stddev_mps2,
+    pub(super) fn new(settings: &EstimatorSettings) -> Self {
+        let variances = [
+            settings.initial_position_variance_m2,
+            settings.initial_position_variance_m2,
+            settings.initial_yaw_variance_rad2,
+            settings.initial_speed_variance_m2ps2,
+            settings.initial_gyro_bias_variance_rad2ps2,
+            settings.initial_accel_bias_variance_m2ps4,
         ];
         Self {
             state: State::default(),
-            covariance: StateCovariance::from_diagonal(&SVector::from_fn(|index, _| {
-                stddevs[index].powi(2)
-            })),
+            covariance: StateCovariance::from_diagonal(&SVector::from_row_slice(&variances)),
             last_imu_stamp_ns: None,
         }
     }
@@ -181,11 +179,7 @@ impl ImuBiasEkf {
         Ok(())
     }
 
-    pub(super) fn update_gps(
-        &mut self,
-        config: &EgoEstimatorConfig,
-        fix: &GpsFix,
-    ) -> Result<UpdateResult> {
+    pub(super) fn update_gps(&mut self, fix: &GpsFix, gps_gate_sigma: f64) -> Result<UpdateResult> {
         let position = fix
             .position_world_m
             .as_ref()
@@ -197,7 +191,7 @@ impl ImuBiasEkf {
         );
         let residual = Vector2::new(position.x, position.y) - self.state.position_world_m;
         let measurement_covariance = Matrix2::identity() * fix.horizontal_position_variance_m2;
-        Ok(self.apply_position_update(residual, measurement_covariance, config.gps_gate_sigma))
+        Ok(self.apply_position_update(residual, measurement_covariance, gps_gate_sigma))
     }
 
     fn apply_position_update(
@@ -287,6 +281,14 @@ mod tests {
     use super::*;
     use fusion_schema::messages::MeasurementTime;
 
+    fn settings() -> EstimatorSettings {
+        let config = crate::scenario::EgoEstimatorConfig {
+            algorithm: crate::scenario::EgoEstimatorAlgorithm::ImuBias,
+            ..Default::default()
+        };
+        EstimatorSettings::resolve(&config, &Default::default())
+    }
+
     fn imu(time_s: i64, yaw_rate_radps: f64, forward_acceleration_mps2: f64) -> ImuSample {
         ImuSample {
             time: Some(MeasurementTime {
@@ -300,7 +302,7 @@ mod tests {
 
     #[test]
     fn estimated_bias_cancels_a_constant_imu_offset() -> Result<()> {
-        let mut filter = ImuBiasEkf::new(&EgoEstimatorConfig::default());
+        let mut filter = ImuBiasEkf::new(&settings());
         filter.state.gyro_bias_radps = 0.5;
         filter.state.accel_bias_mps2 = 2.0;
         let noise = ImuProcessNoise {
@@ -322,7 +324,7 @@ mod tests {
 
     #[test]
     fn gps_update_can_correct_bias_states() {
-        let mut filter = ImuBiasEkf::new(&EgoEstimatorConfig::default());
+        let mut filter = ImuBiasEkf::new(&settings());
         filter.covariance = StateCovariance::identity();
         filter.covariance[(
             StateIndex::PositionWorldX.index(),
