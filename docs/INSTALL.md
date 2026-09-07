@@ -81,3 +81,9 @@ rerun --version
 
 Rerun is only needed for the animated dashboard. Experiments and scoring work
 without it.
+
+## Optional GTSAM estimator
+
+The normal install does not need C++. To run the GTSAM EKF comparison, run the
+one-time setup script and install the command with the `gtsam` feature. See
+[GTSAM.md](GTSAM.md).

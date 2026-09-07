@@ -1,3 +1,4 @@
 /target/
 /runs/
+/third_party/
 .DS_Store

@@ -25,6 +25,13 @@ The default output is the next free `runs/runNNN` directory. Reopen it with
 `fusion view runs/run001`, or compare two runs with
 `fusion compare runs/run001 runs/run002`.
 
+## GTSAM
+
+[`gtsam_ekf.yaml`](../experiments/gtsam_ekf.yaml) runs the bias-aware vehicle
+EKF through GTSAM. It uses the same setup as `imu_bias.yaml` for a direct
+comparison and requires the optional build described in
+[`GTSAM.md`](GTSAM.md).
+
 ## Sweeps
 
 [`localization_sweep.yaml`](../experiments/localization_sweep.yaml) runs a

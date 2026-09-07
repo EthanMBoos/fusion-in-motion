@@ -1,0 +1,38 @@
+# GTSAM EKF comparison
+#
+# Question: Does GTSAM produce the same vehicle and IMU bias estimate as the
+# Rust bias-aware EKF when both use the same measurements and tuning?
+# Run this and imu_bias.yaml, then compare their vehicle and bias errors.
+# This experiment requires a build with the gtsam feature.
+
+root_seed: 20260823
+
+world:
+  objects:
+    - id: stationary
+      initial_position_m: { x: 8.0, y: 4.0 }
+      velocity_world_mps: { x: 0.0, y: 0.0 }
+    - id: moving
+      initial_position_m: { x: 5.0, y: -3.0 }
+      velocity_world_mps: { x: 0.15, y: 0.35 }
+
+trajectory:
+  - { id: rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: accelerate, duration_s: 2.0, longitudinal_acceleration_mps2: 0.5, yaw_rate_radps: 0.0 }
+  - { id: straight, duration_s: 2.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: left-turn, duration_s: 2.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.5 }
+  - { id: cruise, duration_s: 4.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+  - { id: right-turn, duration_s: 2.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: -0.5 }
+  - { id: brake, duration_s: 2.0, longitudinal_acceleration_mps2: -0.5, yaw_rate_radps: 0.0 }
+  - { id: final-rest, duration_s: 1.0, longitudinal_acceleration_mps2: 0.0, yaw_rate_radps: 0.0 }
+
+imu:
+  gyro_bias_radps: 0.003
+  accel_bias_mps2: 0.025
+  gyro_bias_random_walk_radps_sqrt_s: 0.00002
+  accel_bias_random_walk_mps2_sqrt_s: 0.0005
+
+ego_estimator:
+  algorithm: gtsam_ekf_planar
+  initial_gyro_bias_stddev_radps: 0.01
+  initial_accel_bias_stddev_mps2: 0.1

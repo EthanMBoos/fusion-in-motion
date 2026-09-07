@@ -1,4 +1,6 @@
 mod basic;
+#[cfg(feature = "gtsam")]
+mod gtsam;
 mod imu_bias;
 
 use anyhow::{Context, Result, ensure};
@@ -7,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::scenario::{EgoEstimatorAlgorithm, EgoEstimatorConfig, ImuConfig};
 
+#[cfg(feature = "gtsam")]
+use self::gtsam::GtsamEkfPlanarEstimator;
 use self::{basic::BasicEkf, imu_bias::ImuBiasEkf};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,6 +83,7 @@ pub struct TimingDiagnostics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EstimatorAssumptions {
     pub algorithm: EgoEstimatorAlgorithm,
+    pub backend_version: Option<String>,
     pub state_order: Vec<String>,
     pub initial_covariance_diagonal: Vec<f64>,
     pub imu_process_noise: ImuProcessNoise,
@@ -100,7 +105,8 @@ pub fn run(
 ) -> Result<EstimatorRun> {
     validate_delivery_order(measurements)?;
     let settings = EstimatorSettings::resolve(config, imu);
-    let filter = ActiveEstimator::new(config.algorithm, &settings);
+    let filter = ActiveEstimator::new(config.algorithm, &settings)
+        .with_context(|| format!("failed to construct {} estimator", config.algorithm.name()))?;
     let assumptions = filter.assumptions(config.algorithm, &settings);
     if config.timing_compensation {
         run_at_measurement_time(config, measurements, assumptions, settings, filter)
@@ -131,7 +137,9 @@ fn run_at_arrival(
                     .propagate(imu, &settings.imu_process_noise)
                     .with_context(|| estimator_error(config.algorithm, "IMU", time))?;
                 latest_imu_stamp_ns = Some(time.measurement_time_ns);
-                let estimate = estimator.estimate(time.measurement_time_ns, time.arrival_time_ns);
+                let estimate = estimator
+                    .estimate(time.measurement_time_ns, time.arrival_time_ns)
+                    .with_context(|| estimator_error(config.algorithm, "IMU", time))?;
                 validate_estimate(config.algorithm, &estimate)
                     .with_context(|| estimator_error(config.algorithm, "IMU", time))?;
                 estimates.push(estimate);
@@ -237,7 +245,9 @@ fn run_at_measurement_time(
                 }
             }
             revised += usize::from(was_revised);
-            let estimate = estimator.estimate(stamp, final_emission);
+            let estimate = estimator
+                .estimate(stamp, final_emission)
+                .with_context(|| estimator_error(config.algorithm, "IMU", imu_time))?;
             validate_estimate(config.algorithm, &estimate)
                 .with_context(|| estimator_error(config.algorithm, "IMU", imu_time))?;
             estimates.push(estimate);
@@ -358,14 +368,24 @@ impl EstimatorSettings {
 enum ActiveEstimator {
     Basic(BasicEkf),
     ImuBias(ImuBiasEkf),
+    #[cfg(feature = "gtsam")]
+    GtsamEkfPlanar(GtsamEkfPlanarEstimator),
 }
 
 impl ActiveEstimator {
-    fn new(algorithm: EgoEstimatorAlgorithm, settings: &EstimatorSettings) -> Self {
-        match algorithm {
+    fn new(algorithm: EgoEstimatorAlgorithm, settings: &EstimatorSettings) -> Result<Self> {
+        Ok(match algorithm {
             EgoEstimatorAlgorithm::Basic => Self::Basic(BasicEkf::new(settings)),
             EgoEstimatorAlgorithm::ImuBias => Self::ImuBias(ImuBiasEkf::new(settings)),
-        }
+            #[cfg(feature = "gtsam")]
+            EgoEstimatorAlgorithm::GtsamEkfPlanar => {
+                Self::GtsamEkfPlanar(GtsamEkfPlanarEstimator::new(settings)?)
+            }
+            #[cfg(not(feature = "gtsam"))]
+            EgoEstimatorAlgorithm::GtsamEkfPlanar => {
+                anyhow::bail!("gtsam_ekf_planar requires a build with `--features gtsam`")
+            }
+        })
     }
 
     fn assumptions(
@@ -376,9 +396,28 @@ impl ActiveEstimator {
         let (state_names, initial_covariance_diagonal): (&[&str], Vec<f64>) = match self {
             Self::Basic(filter) => (&basic::STATE_NAMES, filter.covariance_diagonal()),
             Self::ImuBias(filter) => (&imu_bias::STATE_NAMES, filter.covariance_diagonal()),
+            #[cfg(feature = "gtsam")]
+            Self::GtsamEkfPlanar(_) => (
+                &imu_bias::STATE_NAMES,
+                vec![
+                    settings.initial_position_variance_m2,
+                    settings.initial_position_variance_m2,
+                    settings.initial_yaw_variance_rad2,
+                    settings.initial_speed_variance_m2ps2,
+                    settings.initial_gyro_bias_variance_rad2ps2,
+                    settings.initial_accel_bias_variance_m2ps4,
+                ],
+            ),
         };
         EstimatorAssumptions {
             algorithm,
+            backend_version: match self {
+                #[cfg(feature = "gtsam")]
+                Self::GtsamEkfPlanar(_) => {
+                    Some(format!("GTSAM {}", GtsamEkfPlanarEstimator::version()))
+                }
+                _ => None,
+            },
             state_order: state_names.iter().map(|name| (*name).to_owned()).collect(),
             initial_covariance_diagonal,
             imu_process_noise: settings.imu_process_noise,
@@ -390,6 +429,8 @@ impl ActiveEstimator {
         match self {
             Self::Basic(filter) => filter.propagate(imu, noise),
             Self::ImuBias(filter) => filter.propagate(imu, noise),
+            #[cfg(feature = "gtsam")]
+            Self::GtsamEkfPlanar(filter) => filter.propagate(imu),
         }
     }
 
@@ -397,13 +438,17 @@ impl ActiveEstimator {
         match self {
             Self::Basic(filter) => filter.update_gps(fix, gps_gate_sigma),
             Self::ImuBias(filter) => filter.update_gps(fix, gps_gate_sigma),
+            #[cfg(feature = "gtsam")]
+            Self::GtsamEkfPlanar(filter) => filter.update_gps(fix),
         }
     }
 
-    fn estimate(&self, estimate_time_ns: i64, available_time_ns: i64) -> EgoStateEstimate {
+    fn estimate(&self, estimate_time_ns: i64, available_time_ns: i64) -> Result<EgoStateEstimate> {
         match self {
-            Self::Basic(filter) => filter.estimate(estimate_time_ns, available_time_ns),
-            Self::ImuBias(filter) => filter.estimate(estimate_time_ns, available_time_ns),
+            Self::Basic(filter) => Ok(filter.estimate(estimate_time_ns, available_time_ns)),
+            Self::ImuBias(filter) => Ok(filter.estimate(estimate_time_ns, available_time_ns)),
+            #[cfg(feature = "gtsam")]
+            Self::GtsamEkfPlanar(filter) => filter.estimate(estimate_time_ns, available_time_ns),
         }
     }
 }
@@ -480,6 +525,9 @@ fn estimator_error(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "gtsam")]
+    use fusion_schema::messages::Vec2;
+
     fn estimate(algorithm: EgoEstimatorAlgorithm) -> EgoStateEstimate {
         let state_dimension = algorithm.state_dimension();
         EgoStateEstimate {
@@ -511,5 +559,149 @@ mod tests {
         let mut missing_bias = estimate(EgoEstimatorAlgorithm::ImuBias);
         missing_bias.gyro_bias_z_radps = None;
         assert!(validate_estimate(EgoEstimatorAlgorithm::ImuBias, &missing_bias).is_err());
+    }
+
+    #[cfg(feature = "gtsam")]
+    #[test]
+    fn gtsam_ekf_matches_the_rust_bias_ekf_after_every_input() -> Result<()> {
+        let config = EgoEstimatorConfig {
+            algorithm: EgoEstimatorAlgorithm::GtsamEkfPlanar,
+            gps_gate_sigma: 3.0,
+            ..Default::default()
+        };
+        let imu_config = ImuConfig::default();
+        let settings = EstimatorSettings::resolve(&config, &imu_config);
+        let mut rust = ImuBiasEkf::new(&settings);
+        let mut gtsam = GtsamEkfPlanarEstimator::new(&settings)?;
+
+        for (index, measurement) in [
+            imu_sample(0, 0.02, 0.4),
+            imu_sample(100_000_000, 0.03, 0.4),
+            imu_sample(200_000_000, 0.20, 0.1),
+        ]
+        .iter()
+        .enumerate()
+        {
+            rust.propagate(measurement, &settings.imu_process_noise)?;
+            gtsam.propagate(measurement)?;
+            assert_estimates_match(
+                index,
+                "IMU",
+                measurement.time.as_ref().unwrap(),
+                &rust,
+                &gtsam,
+            )?;
+        }
+
+        for (index, fix) in [
+            gps_fix(200_000_000, 0.03, -0.02, 0.09),
+            gps_fix(200_000_000, 100.0, 100.0, 0.09),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let rust_result = rust.update_gps(fix, settings.gps_gate_sigma)?;
+            let gtsam_result = gtsam.update_gps(fix)?;
+            assert_update_matches(index, rust_result, gtsam_result);
+            assert_estimates_match(index, "GPS", fix.time.as_ref().unwrap(), &rust, &gtsam)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "gtsam")]
+    fn imu_sample(time_ns: i64, yaw_rate_radps: f64, acceleration_mps2: f64) -> ImuSample {
+        ImuSample {
+            time: Some(MeasurementTime {
+                measurement_time_ns: time_ns,
+                arrival_time_ns: time_ns,
+            }),
+            yaw_rate_radps,
+            forward_acceleration_mps2: acceleration_mps2,
+        }
+    }
+
+    #[cfg(feature = "gtsam")]
+    fn gps_fix(time_ns: i64, x_m: f64, y_m: f64, variance_m2: f64) -> GpsFix {
+        GpsFix {
+            time: Some(MeasurementTime {
+                measurement_time_ns: time_ns,
+                arrival_time_ns: time_ns,
+            }),
+            position_world_m: Some(Vec2 { x: x_m, y: y_m }),
+            horizontal_position_variance_m2: variance_m2,
+        }
+    }
+
+    #[cfg(feature = "gtsam")]
+    fn assert_update_matches(index: usize, rust: UpdateResult, gtsam: UpdateResult) {
+        match (rust, gtsam) {
+            (
+                UpdateResult::Applied {
+                    normalized_residual: rust,
+                },
+                UpdateResult::Applied {
+                    normalized_residual: gtsam,
+                },
+            )
+            | (
+                UpdateResult::Rejected {
+                    normalized_residual: rust,
+                },
+                UpdateResult::Rejected {
+                    normalized_residual: gtsam,
+                },
+            ) => assert!(
+                (rust - gtsam).abs() < 1.0e-8,
+                "GPS input {index} normalized residual differs: Rust {rust}, GTSAM {gtsam}"
+            ),
+            (UpdateResult::Invalid, UpdateResult::Invalid) => {}
+            (rust, gtsam) => {
+                panic!("GPS input {index} decision differs: Rust {rust:?}, GTSAM {gtsam:?}")
+            }
+        }
+    }
+
+    #[cfg(feature = "gtsam")]
+    fn assert_estimates_match(
+        index: usize,
+        sensor: &str,
+        time: &MeasurementTime,
+        rust: &ImuBiasEkf,
+        gtsam: &GtsamEkfPlanarEstimator,
+    ) -> Result<()> {
+        let rust = rust.estimate(time.measurement_time_ns, time.arrival_time_ns);
+        let gtsam = gtsam.estimate(time.measurement_time_ns, time.arrival_time_ns)?;
+        let state = |estimate: &EgoStateEstimate| {
+            let pose = estimate.pose_world.as_ref().unwrap();
+            let position = pose.position.as_ref().unwrap();
+            [
+                position.x,
+                position.y,
+                pose.yaw_rad,
+                estimate.forward_speed_mps,
+                estimate.gyro_bias_z_radps.unwrap(),
+                estimate.accel_bias_x_mps2.unwrap(),
+            ]
+        };
+        for (coordinate, (rust, gtsam)) in state(&rust).into_iter().zip(state(&gtsam)).enumerate() {
+            assert!(
+                (rust - gtsam).abs() < 1.0e-8,
+                "{sensor} input {index}, measured at {} ns: state[{coordinate}] differs: Rust {rust}, GTSAM {gtsam}",
+                time.measurement_time_ns
+            );
+        }
+        for (coordinate, (rust, gtsam)) in rust
+            .state_covariance
+            .iter()
+            .zip(&gtsam.state_covariance)
+            .enumerate()
+        {
+            assert!(
+                (rust - gtsam).abs() < 1.0e-8,
+                "{sensor} input {index}, measured at {} ns: covariance[{coordinate}] differs: Rust {rust}, GTSAM {gtsam}",
+                time.measurement_time_ns
+            );
+        }
+        Ok(())
     }
 }

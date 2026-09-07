@@ -91,6 +91,9 @@ fn experiment_files() -> Result<Vec<PathBuf>> {
         .map(|entry| Ok(entry?.path()))
         .collect::<Result<Vec<_>>>()?;
     paths.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("yaml"));
+    if !cfg!(feature = "gtsam") {
+        paths.retain(|path| path.file_stem().and_then(|value| value.to_str()) != Some("gtsam_ekf"));
+    }
     paths.sort();
     Ok(paths)
 }
@@ -512,7 +515,10 @@ fn check_perception_sweep(report: &SweepReport) -> Result<()> {
 
 #[test]
 fn checked_in_experiments_keep_their_results() -> Result<()> {
-    let baselines = read_baselines()?;
+    let mut baselines = read_baselines()?;
+    if !cfg!(feature = "gtsam") {
+        baselines.experiments.remove("gtsam_ekf");
+    }
     ensure!(
         baselines.relative_tolerance_fraction > 0.0,
         "experiment baseline tolerance must be positive"

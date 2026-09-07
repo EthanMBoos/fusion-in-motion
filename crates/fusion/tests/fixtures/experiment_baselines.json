@@ -24,6 +24,17 @@
         }
       }
     },
+    "gtsam_ekf": {
+      "metrics": {
+        "ego": {
+          "position_rmse_m": 0.23191230185271788,
+          "gyro_bias_rmse_radps": 0.0032127811274446374,
+          "accel_bias_rmse_mps2": 0.030848762397433147,
+          "gyro_bias_95pct_coverage": 1.0,
+          "accel_bias_95pct_coverage": 0.90875
+        }
+      }
+    },
     "initial": {
       "metrics": {
         "ego": {

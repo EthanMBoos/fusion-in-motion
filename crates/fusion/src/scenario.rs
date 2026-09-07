@@ -194,17 +194,18 @@ pub enum EgoEstimatorAlgorithm {
     #[default]
     Basic,
     ImuBias,
+    GtsamEkfPlanar,
 }
 
 impl EgoEstimatorAlgorithm {
     pub const fn estimates_imu_bias(self) -> bool {
-        matches!(self, Self::ImuBias)
+        matches!(self, Self::ImuBias | Self::GtsamEkfPlanar)
     }
 
     pub const fn state_dimension(self) -> usize {
         match self {
             Self::Basic => 4,
-            Self::ImuBias => 6,
+            Self::ImuBias | Self::GtsamEkfPlanar => 6,
         }
     }
 
@@ -212,6 +213,7 @@ impl EgoEstimatorAlgorithm {
         match self {
             Self::Basic => "basic",
             Self::ImuBias => "imu_bias",
+            Self::GtsamEkfPlanar => "gtsam_ekf_planar",
         }
     }
 }

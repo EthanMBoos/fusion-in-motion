@@ -29,14 +29,17 @@ completed GPS/IMU run in measurement-time order. This is an offline reference,
 not an online rewind/replay filter. Each lidar detection has its own measurement
 time because one scan can collect returns at different times.
 
-`ego_estimator.algorithm` selects `basic` or `imu_bias`. The basic EKF assumes
-the IMU is correct and uses a row-major 4×4 covariance ordered as:
+`ego_estimator.algorithm` selects `basic`, `imu_bias`, or `gtsam_ekf_planar`.
+The GTSAM backend requires the optional build in [GTSAM.md](GTSAM.md). The
+basic EKF assumes the IMU is correct and uses a row-major 4×4 covariance
+ordered as:
 
 ```text
 x, y, yaw, forward speed
 ```
 
-The bias-aware EKF estimates gyro and accelerometer bias and uses a 6×6 matrix:
+The two bias-aware EKFs estimate gyro and accelerometer bias and use a 6×6
+matrix:
 
 ```text
 x, y, yaw, forward speed, gyro bias, accelerometer bias

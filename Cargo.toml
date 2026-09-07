@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/fusion", "crates/fusion-schema"]
+exclude = ["crates/fusion-gtsam"]
 resolver = "2"
 
 [workspace.package]

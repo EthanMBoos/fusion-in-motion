@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 autobins = false
 
+[features]
+gtsam = ["dep:fusion-gtsam"]
+
 [[bin]]
 name = "fusion"
 path = "src/main.rs"
@@ -21,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 sha2.workspace = true
+fusion-gtsam = { path = "../fusion-gtsam", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
