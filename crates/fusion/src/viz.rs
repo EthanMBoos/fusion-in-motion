@@ -24,6 +24,12 @@ const CAMERA_COLOR: u32 = 0x35d0e6ff;
 const LIDAR_COLOR: u32 = 0x3388ffff;
 const GPS_COLOR: u32 = 0xffdd33ff;
 const REFERENCE_COLOR: u32 = 0x88888899;
+const EXTERNAL_TRACK_COLOR: u32 = 0xff6655ff;
+
+struct ExternalTracks {
+    id: String,
+    frames: Vec<ObjectTrackFrame>,
+}
 
 pub fn default_visualization_path(run: &Path) -> PathBuf {
     run.join("reports/baseline/visualization.rrd")
@@ -46,6 +52,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
     let estimates = bundle::read_ego_estimates(&run.join("estimates/ego-baseline.mcap"))?;
     let estimated_tracks = bundle::read_tracks(&run.join("tracks/estimated-ego.mcap"))?;
     let truth_tracks = bundle::read_tracks(&run.join("tracks/truth-ego.mcap"))?;
+    let external_tracks = read_external_tracks(run)?;
     let truth_tracker_history =
         bundle::read_tracker_history(&run.join("reports/baseline/tracker-history-truth-ego.json"))?;
     let scenario = load_and_resolve(&run.join("scenario.resolved.yaml"))?;
@@ -70,14 +77,26 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
         (false, true) => "\n\nLidar: blue range and direction.",
         (false, false) => "",
     };
+    let external_guide = if external_tracks.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nExternal tracks: red ({}).",
+            external_tracks
+                .iter()
+                .map(|result| result.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     rec.log_static(
         "dashboard/guide",
         &rerun::TextDocument::new(format!(
-            "# Fusion in Motion — {run_name}\n\nVehicle estimator: {}.\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nTracker update: gray prediction, purple correction, and 95% uncertainty outlines use the true vehicle pose.{sensor_guide}",
+            "# Fusion in Motion — {run_name}\n\nVehicle estimator: {}.\n\nVehicle: green truth, pink GPS/IMU estimate, yellow GPS fixes.\n\nObjects: green truth, orange tracks using the vehicle estimate, purple tracks using the true vehicle pose. Labels are tracker IDs.\n\nTracker update: gray prediction, purple correction, and 95% uncertainty outlines use the true vehicle pose.{sensor_guide}{external_guide}",
             scenario.ego_estimator.algorithm.name(),
         )),
     )?;
-    log_styles(&rec)?;
+    log_styles(&rec, &external_tracks)?;
     log_paths(
         &rec,
         &ego_truth,
@@ -85,6 +104,7 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
         &object_truth,
         &estimated_tracks,
         &truth_tracks,
+        &external_tracks,
     )?;
     log_map_bounds(
         &rec,
@@ -93,10 +113,17 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
         &object_truth,
         &estimated_tracks,
         &truth_tracks,
+        &external_tracks,
     )?;
     log_sensor_references(&rec, &scenario, &measurements)?;
     log_ego(&rec, &ego_truth, &estimates)?;
-    log_objects(&rec, &object_truth, &estimated_tracks, &truth_tracks)?;
+    log_objects(
+        &rec,
+        &object_truth,
+        &estimated_tracks,
+        &truth_tracks,
+        &external_tracks,
+    )?;
     log_tracker_history(&rec, &truth_tracker_history)?;
     log_measurements(&rec, &measurements)?;
     log_bias(&rec, &imu_bias_truth, &estimates)?;
@@ -109,9 +136,46 @@ pub fn write_bundle_visualization(run: &Path, output: &Path) -> Result<()> {
         &estimated_tracks,
         &truth_tracks,
     )?;
+    for result in &external_tracks {
+        log_track_errors(
+            &rec,
+            &format!("plots/objects/{}/error_m", result.id),
+            &scenario,
+            &object_truth,
+            &result.frames,
+        )?;
+    }
     send_blueprint(&rec, &scenario)?;
     rec.flush_blocking()?;
     Ok(())
+}
+
+fn read_external_tracks(run: &Path) -> Result<Vec<ExternalTracks>> {
+    let mut paths = fs::read_dir(run.join("tracks"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.retain(|path| {
+        path.extension().and_then(|value| value.to_str()) == Some("mcap")
+            && !matches!(
+                path.file_stem().and_then(|value| value.to_str()),
+                Some("estimated-ego" | "truth-ego")
+            )
+    });
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow::anyhow!("invalid track result path {}", path.display()))?
+                .to_owned();
+            Ok(ExternalTracks {
+                id,
+                frames: bundle::read_tracks(&path)?,
+            })
+        })
+        .collect()
 }
 
 pub fn open_in_viewer(path: &Path) -> Result<()> {
@@ -125,7 +189,7 @@ pub fn open_in_viewer(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn log_styles(rec: &rerun::RecordingStream) -> Result<()> {
+fn log_styles(rec: &rerun::RecordingStream, external_tracks: &[ExternalTracks]) -> Result<()> {
     for (path, name, color) in [
         (
             "plots/ego/position_error_m",
@@ -173,6 +237,15 @@ fn log_styles(rec: &rerun::RecordingStream) -> Result<()> {
                 .with_names([name]),
         )?;
     }
+    for result in external_tracks {
+        let [r, g, b, _] = EXTERNAL_TRACK_COLOR.to_be_bytes();
+        rec.log_static(
+            format!("plots/objects/{}/error_m", result.id),
+            &rerun::SeriesLines::new()
+                .with_colors([[r, g, b]])
+                .with_names([format!("object error: {} (m)", result.id)]),
+        )?;
+    }
     Ok(())
 }
 
@@ -183,6 +256,7 @@ fn log_paths(
     object_truth: &[ObjectTruthState],
     estimated_tracks: &[ObjectTrackFrame],
     truth_tracks: &[ObjectTrackFrame],
+    external_tracks: &[ExternalTracks],
 ) -> Result<()> {
     let truth_samples = ego_truth.iter().filter_map(|state| {
         Some((
@@ -223,6 +297,14 @@ fn log_paths(
         truth_tracks,
         TRUTH_EGO_TRACK_COLOR,
     )?;
+    for result in external_tracks {
+        log_track_paths(
+            rec,
+            &format!("map/paths/tracks_external/{}", result.id),
+            &result.frames,
+            EXTERNAL_TRACK_COLOR,
+        )?;
+    }
     Ok(())
 }
 
@@ -259,6 +341,7 @@ fn log_map_bounds(
     object_truth: &[ObjectTruthState],
     estimated_tracks: &[ObjectTrackFrame],
     truth_tracks: &[ObjectTrackFrame],
+    external_tracks: &[ExternalTracks],
 ) -> Result<()> {
     let ego_truth_points = ego_truth
         .iter()
@@ -278,10 +361,17 @@ fn log_map_bounds(
         .flat_map(|frame| &frame.tracks)
         .filter_map(|track| track.position_world_m.as_ref())
         .map(point2);
+    let external_track_points = external_tracks
+        .iter()
+        .flat_map(|result| &result.frames)
+        .flat_map(|frame| &frame.tracks)
+        .filter_map(|track| track.position_world_m.as_ref())
+        .map(point2);
     let mut points = ego_truth_points
         .chain(estimate_points)
         .chain(object_truth_points)
-        .chain(track_points);
+        .chain(track_points)
+        .chain(external_track_points);
     let Some(first) = points.next() else {
         return Ok(());
     };
@@ -454,6 +544,7 @@ fn log_objects(
     truth: &[ObjectTruthState],
     estimated: &[ObjectTrackFrame],
     truth_ego: &[ObjectTrackFrame],
+    external: &[ExternalTracks],
 ) -> Result<()> {
     for state in truth {
         if let Some(position) = &state.position_world_m {
@@ -487,6 +578,26 @@ fn log_objects(
                         points
                     };
                     rec.log(format!("{root}/{}", track.track_id), &points)?;
+                }
+            }
+        }
+    }
+    for result in external {
+        for frame in &result.frames {
+            set_time(rec, frame.estimate_time_ns);
+            rec.log(
+                format!("map/objects/external/{}", result.id),
+                &rerun::Clear::recursive(),
+            )?;
+            for track in &frame.tracks {
+                if let Some(position) = &track.position_world_m {
+                    rec.log(
+                        format!("map/objects/external/{}/{}", result.id, track.track_id),
+                        &rerun::Points2D::new([point2(position)])
+                            .with_colors([EXTERNAL_TRACK_COLOR])
+                            .with_radii([0.12])
+                            .with_labels([format!("{}:{}", result.id, track.track_id)]),
+                    )?;
                 }
             }
         }
@@ -720,35 +831,46 @@ fn log_errors(
         ("plots/objects/estimated_ego_error_m", estimated_tracks),
         ("plots/objects/truth_ego_error_m", truth_tracks),
     ] {
-        for frame in frames {
-            let assignments = crate::eval::frame_truth_assignments(
-                frame,
-                object_truth,
-                scenario.metrics.max_truth_match_gap_ns,
-                scenario.metrics.track_truth_match_max_distance_m,
-            );
-            for (track_index, truth_key) in assignments {
-                let track = &frame.tracks[track_index];
-                let Some(truth) = object_truth
-                    .iter()
-                    .filter(|truth| truth.track_key == truth_key)
-                    .min_by_key(|truth| (truth.time_ns - frame.estimate_time_ns).abs())
-                else {
-                    continue;
-                };
-                let (Some(position), Some(truth_position)) =
-                    (&track.position_world_m, &truth.position_world_m)
-                else {
-                    continue;
-                };
-                set_time(rec, frame.estimate_time_ns);
-                rec.log(
-                    path,
-                    &rerun::Scalars::single(
-                        (position.x - truth_position.x).hypot(position.y - truth_position.y),
-                    ),
-                )?;
-            }
+        log_track_errors(rec, path, scenario, object_truth, frames)?;
+    }
+    Ok(())
+}
+
+fn log_track_errors(
+    rec: &rerun::RecordingStream,
+    path: &str,
+    scenario: &crate::scenario::ResolvedScenario,
+    object_truth: &[ObjectTruthState],
+    frames: &[ObjectTrackFrame],
+) -> Result<()> {
+    for frame in frames {
+        let assignments = crate::eval::frame_truth_assignments(
+            frame,
+            object_truth,
+            scenario.metrics.max_truth_match_gap_ns,
+            scenario.metrics.track_truth_match_max_distance_m,
+        );
+        for (track_index, truth_key) in assignments {
+            let track = &frame.tracks[track_index];
+            let Some(truth) = object_truth
+                .iter()
+                .filter(|truth| truth.track_key == truth_key)
+                .min_by_key(|truth| (truth.time_ns - frame.estimate_time_ns).abs())
+            else {
+                continue;
+            };
+            let (Some(position), Some(truth_position)) =
+                (&track.position_world_m, &truth.position_world_m)
+            else {
+                continue;
+            };
+            set_time(rec, frame.estimate_time_ns);
+            rec.log(
+                path,
+                &rerun::Scalars::single(
+                    (position.x - truth_position.x).hypot(position.y - truth_position.y),
+                ),
+            )?;
         }
     }
     Ok(())

@@ -151,6 +151,7 @@ fn main() -> Result<()> {
                     metrics.time_coverage_fraction * 100.0,
                     metrics.invalid_output_count
                 );
+                println!("View: fusion view {} --force", run.display());
             }
         },
         Command::View {

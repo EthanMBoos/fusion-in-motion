@@ -39,6 +39,8 @@ of the way. The files under [`experiments/`](experiments/) add those effects one
 at a time. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for the sequence.
 
 Development plans are in [docs/ROADMAP.md](docs/ROADMAP.md).
+External comparisons are documented in [docs/GTSAM.md](docs/GTSAM.md) and
+[docs/STONE_SOUP.md](docs/STONE_SOUP.md).
 
 ## Development
 

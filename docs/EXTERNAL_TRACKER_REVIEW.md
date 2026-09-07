@@ -56,11 +56,9 @@ ego: world pose + covariance
 world track: x, y, vx, vy + covariance
 ```
 
-`fusion score tracks` already imports external world tracks from CSV, scores
-them, and saves the result. That is enough for an initial state comparison. It
-cannot represent output frames with no tracks, so it will undercount misses. It
-also does not add external tracks to the Rerun view. Those are the two required
-fixes for a full comparison.
+`fusion score tracks` imports external world tracks from CSV, including empty
+output frames, scores them, and saves the result. Rebuilding the Rerun recording
+adds the external tracks and their error to the dashboard.
 
 Covariance is optional unless the comparison checks filter uncertainty.
 Lifecycle and association diagnostics can stay in backend-specific files.
@@ -420,14 +418,10 @@ rules.
 
 ### 1. Validate the current Rust tracker with Stone Soup
 
-This is a post-run validation, not a selectable tracker backend. Run the normal
-experiment first, then have a small Python program read its
-`measurements.mcap` and `truth.mcap`, run Stone Soup with the same lidar
-observations and truth ego, and write world tracks for `fusion score tracks`.
-
-Extend the external result import to preserve frames with no tracks and show
-the imported tracks in Rerun. Add covariance only if the comparison includes
-uncertainty.
+This is a post-run validation, not a selectable tracker backend. The first
+working comparison is in [`STONE_SOUP.md`](STONE_SOUP.md). It reads the lidar
+observations and truth ego from a completed run, then writes world tracks for
+`fusion score tracks`.
 
 There is no embedded Python or live subprocess. Stone Soup and the Rust tracker
 process the same saved measurements, and the existing Rust code scores both

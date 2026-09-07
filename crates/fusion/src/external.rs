@@ -83,6 +83,28 @@ pub fn read_tracks_csv(
         let estimate_time_ns = required::<i64>(&columns, &fields, "estimate_time_ns")?;
         let available_time_ns =
             optional::<i64>(&columns, &fields, "available_time_ns")?.unwrap_or(estimate_time_ns);
+        if ["track_id", "x_m", "y_m", "vx_mps", "vy_mps"]
+            .iter()
+            .all(|name| field(&columns, &fields, name).is_none())
+        {
+            if !frames.last().is_some_and(|frame| {
+                frame.estimate_time_ns == estimate_time_ns
+                    && frame.available_time_ns == available_time_ns
+            }) {
+                ensure!(
+                    frames
+                        .last()
+                        .is_none_or(|frame| estimate_time_ns >= frame.estimate_time_ns),
+                    "track CSV times must not go backward"
+                );
+                frames.push(ObjectTrackFrame {
+                    estimate_time_ns,
+                    available_time_ns,
+                    tracks: Vec::new(),
+                });
+            }
+            continue;
+        }
         let x = required(&columns, &fields, "x_m")?;
         let y = required(&columns, &fields, "y_m")?;
         let vx = required(&columns, &fields, "vx_mps")?;
@@ -188,10 +210,17 @@ fn text<'a>(
     fields: &'a [String],
     name: &str,
 ) -> Result<&'a str> {
+    field(columns, fields, name).ok_or_else(|| anyhow::anyhow!("missing {name}"))
+}
+
+fn field<'a>(
+    columns: &BTreeMap<String, usize>,
+    fields: &'a [String],
+    name: &str,
+) -> Option<&'a str> {
     columns
         .get(name)
         .and_then(|index| fields.get(*index))
         .map(String::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("missing {name}"))
 }

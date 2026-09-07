@@ -32,6 +32,11 @@ EKF through GTSAM. It uses the same setup as `imu_bias.yaml` for a direct
 comparison and requires the optional build described in
 [`GTSAM.md`](GTSAM.md).
 
+## Stone Soup
+
+[`STONE_SOUP.md`](STONE_SOUP.md) runs Stone Soup over the completed lidar-only
+tracker experiment, then scores and displays its tracks beside the Rust result.
+
 ## Sweeps
 
 [`localization_sweep.yaml`](../experiments/localization_sweep.yaml) runs a

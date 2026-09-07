@@ -651,13 +651,25 @@ fn external_outputs_can_be_scored() -> Result<()> {
 
     let object_truth = bundle::read_object_truth(&run.join("truth.mcap"))?;
     let track_csv = temp.path().join("perfect-tracks.csv");
-    let mut source = String::from("estimate_time_ns,track_id,x_m,y_m,vx_mps,vy_mps\n");
-    for state in object_truth {
+    let first_time_ns = object_truth[0].time_ns;
+    let mut source =
+        String::from("estimate_time_ns,available_time_ns,track_id,x_m,y_m,vx_mps,vy_mps\n");
+    source.push_str(&format!("{first_time_ns},{first_time_ns},,,,,\n"));
+    for state in object_truth
+        .into_iter()
+        .filter(|state| state.time_ns != first_time_ns)
+    {
         let position = state.position_world_m.as_ref().unwrap();
         let velocity = state.velocity_world_mps.as_ref().unwrap();
         source.push_str(&format!(
-            "{},{},{},{},{},{}\n",
-            state.time_ns, state.track_key, position.x, position.y, velocity.x, velocity.y,
+            "{},{},{},{},{},{},{}\n",
+            state.time_ns,
+            state.time_ns,
+            state.track_key,
+            position.x,
+            position.y,
+            velocity.x,
+            velocity.y,
         ));
     }
     std::fs::write(&track_csv, source)?;
@@ -667,6 +679,10 @@ fn external_outputs_can_be_scored() -> Result<()> {
     assert!(metrics.velocity_rmse_mps.unwrap() < 1.0e-12);
     assert_eq!(metrics.matched_samples, metrics.track_samples);
     assert_eq!(metrics.invalid_output_count, 0);
+    assert!(metrics.missed_object_samples > 0);
+    let imported = bundle::read_tracks(&run.join("tracks/perfect-tracks.mcap"))?;
+    assert_eq!(imported[0].estimate_time_ns, first_time_ns);
+    assert!(imported[0].tracks.is_empty());
     Ok(())
 }
 

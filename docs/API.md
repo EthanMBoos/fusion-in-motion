@@ -59,3 +59,12 @@ control.
 The tracker history JSON under `reports/baseline` records predictions,
 association decisions, updates, and track lifecycle events from the built-in
 tracker. It is not part of the external result API.
+
+External track CSV uses these columns:
+
+```text
+estimate_time_ns,available_time_ns,track_id,x_m,y_m,vx_mps,vy_mps
+```
+
+Write one row per track. To record a frame with no tracks, write its two times
+and leave the remaining fields empty.

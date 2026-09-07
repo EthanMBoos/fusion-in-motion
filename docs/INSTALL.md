@@ -87,3 +87,9 @@ without it.
 The normal install does not need C++. To run the GTSAM EKF comparison, run the
 one-time setup script and install the command with the `gtsam` feature. See
 [GTSAM.md](GTSAM.md).
+
+## Optional Stone Soup tracker
+
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) to run
+the external Stone Soup comparison. Its Python environment is created on the
+first run. See [STONE_SOUP.md](STONE_SOUP.md).
