@@ -288,13 +288,14 @@ pub fn write_reports(
     );
     summary.push_str(&format!(
         "Candidate pairs/gated out/selected: {}/{}/{}  \n\
-         Missed tracker updates: {}  \n\
+         Missed/coasted tracker updates: {}/{}  \n\
          Estimated ego missed/false/switches/fragments: {}/{}/{}/{}  \n\
          Truth ego missed/false/switches/fragments: {}/{}/{}/{}\n",
         tracker_estimated_diagnostics.candidate_pairs,
         tracker_estimated_diagnostics.gated_out_pairs,
         tracker_estimated_diagnostics.selected_associations,
         tracker_estimated_diagnostics.missed_updates,
+        tracker_estimated_diagnostics.coasted_updates,
         metrics.tracks_with_estimated_ego.missed_object_samples,
         metrics.tracks_with_estimated_ego.false_track_samples,
         metrics.tracks_with_estimated_ego.identity_switch_count,

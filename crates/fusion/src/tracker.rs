@@ -8,15 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::Result;
 use fusion_schema::messages::{ObjectTrack, ObjectTrackFrame, Vec2};
 use fusion_tracking::{
-    AssociationPlan, BatchResult, GateDecision, GlobalNearestNeighbor, HitCountLifecycle,
-    ObservationBatch, SinglePosteriorReducer, TimedObservation, TrackManager,
+    AssociationPlan, GateDecision, GlobalNearestNeighbor, HitCountLifecycle, ObservationBatch,
+    SinglePosteriorReducer, TimedObservation, TrackManager, TrackManagerDiagnostics, Tracker,
+    TrackingOutput,
 };
 use serde::{Deserialize, Serialize};
 
 pub use input::{EgoHistory, EgoSource, PerceptionMeasurement};
 
-use crate::scenario::ObjectTrackerConfig;
-use input::{Detection, DetectionBatch, DetectionContext};
+use crate::scenario::{CameraConfig, LidarConfig, ObjectTrackerConfig};
+use input::{Detection, DetectionBatch, DetectionContext, DetectionScanContext};
 use planar_initiator::PlanarInitiator;
 use planar_model::PlanarModel;
 use planar_state::{PlanarTrackFilter, snapshot};
@@ -27,6 +28,7 @@ pub struct TrackerDiagnostics {
     pub applied_updates: usize,
     pub waiting_for_range: usize,
     pub missing_ego_pose: usize,
+    pub missing_scan_ego_pose: usize,
     pub delayed_detections: usize,
     pub replayed_detections: usize,
     pub discarded_detections: usize,
@@ -39,6 +41,7 @@ pub struct TrackerDiagnostics {
     pub invalid_candidate_pairs: usize,
     pub selected_associations: usize,
     pub missed_updates: usize,
+    pub coasted_updates: usize,
     pub created_tracks: usize,
     pub confirmed_tracks: usize,
     pub deleted_tracks: usize,
@@ -111,6 +114,7 @@ pub(crate) enum LifecycleEventKind {
     Created,
     Confirmed,
     Missed,
+    Coasted,
     Deleted,
 }
 
@@ -133,12 +137,14 @@ pub(crate) struct TrackerHistory {
 
 pub fn run(
     config: &ObjectTrackerConfig,
+    camera_config: &CameraConfig,
+    lidar_config: &LidarConfig,
     measurements: &[PerceptionMeasurement],
     ego_history: &EgoHistory,
 ) -> Result<TrackerRun> {
     input::validate_delivery_order(measurements)?;
     let mut diagnostics = TrackerDiagnostics::default();
-    let mut batches = input::flatten(measurements)?;
+    let mut batches = input::flatten(camera_config, lidar_config, measurements)?;
     diagnostics.received_detections = batches.iter().map(|batch| batch.detections.len()).sum();
     input::prepare_timing(config, &mut batches, &mut diagnostics);
 
@@ -152,38 +158,51 @@ pub fn run(
             missed_assignment_cost: config.gate_sigma.powi(2) + 1.0,
         },
         SinglePosteriorReducer,
-        PlanarInitiator,
+        PlanarInitiator {
+            minimum_unassigned_probability: 0.5,
+        },
         HitCountLifecycle {
             confirmation_hits: config.confirmation_hits,
             max_time_without_update_ns: (config.max_time_without_update_s * 1.0e9).round() as i64,
+            hit_probability_threshold: 0.5,
         },
     );
-    let mut frames = Vec::new();
+    let mut frames = Vec::with_capacity(batches.len());
     let mut processed_detections = Vec::new();
     let mut history = TrackerHistory::default();
-
-    for batch in batches {
-        let core_batch = to_core_batch(&batch, ego_history, &mut diagnostics);
-        let result = manager.process_batch(&core_batch)?;
-        collect_diagnostics(&core_batch, &result, &mut diagnostics);
-        collect_history(&batch, &core_batch, &result, config, &mut history);
-        frames.push(ObjectTrackFrame {
-            estimate_time_ns: result.measurement_time_ns,
-            available_time_ns: result.arrival_time_ns,
-            tracks: result
-                .tracks
-                .iter()
-                .map(|track| to_track(&track.state, track.id.as_str()))
-                .collect(),
-        });
-        processed_detections.extend(
-            batch
-                .detections
-                .iter()
-                .enumerate()
-                .map(|(index, _)| format!("{}:{index}", batch.stable_id)),
-        );
-    }
+    process_scans(
+        batches,
+        ego_history,
+        &mut manager,
+        &mut diagnostics,
+        |source, input, output, diagnostics| {
+            collect_diagnostics(&input, &output, diagnostics);
+            collect_history(&source, &input, &output, config, &mut history);
+            frames.push(ObjectTrackFrame {
+                estimate_time_ns: output.measurement_time_ns,
+                available_time_ns: output.arrival_time_ns,
+                tracks: output
+                    .tracks
+                    .iter()
+                    .map(|track| {
+                        let track_id = track
+                            .identity
+                            .track_id()
+                            .expect("TrackManager reports labeled tracks");
+                        to_track(&track.state, track_id.as_str())
+                    })
+                    .collect(),
+            });
+            processed_detections.extend(
+                source
+                    .detections
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| format!("{}:{index}", source.stable_id)),
+            );
+            Ok(())
+        },
+    )?;
 
     Ok(TrackerRun {
         frames,
@@ -193,11 +212,42 @@ pub fn run(
     })
 }
 
+fn process_scans<T, F>(
+    batches: Vec<DetectionBatch>,
+    ego_history: &EgoHistory,
+    tracker: &mut T,
+    diagnostics: &mut TrackerDiagnostics,
+    mut handle_output: F,
+) -> Result<()>
+where
+    T: Tracker<
+            ObservationBatch<Detection, DetectionContext, DetectionScanContext>,
+            State = PlanarTrackFilter,
+        >,
+    F: FnMut(
+        DetectionBatch,
+        ObservationBatch<Detection, DetectionContext, DetectionScanContext>,
+        TrackingOutput<PlanarTrackFilter, T::Diagnostics>,
+        &mut TrackerDiagnostics,
+    ) -> Result<()>,
+{
+    for source in batches {
+        let input = to_core_batch(&source, ego_history, diagnostics);
+        let output = tracker.process_scan(&input).map_err(anyhow::Error::new)?;
+        handle_output(source, input, output, diagnostics)?;
+    }
+    Ok(())
+}
+
 fn to_core_batch(
     batch: &DetectionBatch,
     ego_history: &EgoHistory,
     diagnostics: &mut TrackerDiagnostics,
-) -> ObservationBatch<Detection, DetectionContext> {
+) -> ObservationBatch<Detection, DetectionContext, DetectionScanContext> {
+    let scan_ego_pose = ego_history.sample(batch.measurement_time_ns);
+    if scan_ego_pose.is_none() {
+        diagnostics.missing_scan_ego_pose += 1;
+    }
     let observations = batch
         .detections
         .iter()
@@ -220,28 +270,36 @@ fn to_core_batch(
         id: batch.stable_id.clone().into(),
         measurement_time_ns: batch.measurement_time_ns,
         arrival_time_ns: batch.arrival_time_ns,
+        context: DetectionScanContext {
+            sensor: batch.sensor,
+            ego_pose: scan_ego_pose,
+            horizontal_fov_rad: batch.horizontal_fov_rad,
+            max_range_m: batch.max_range_m,
+            detection_probability: batch.detection_probability,
+        },
         observations,
     }
 }
 
 fn collect_diagnostics(
-    core_batch: &ObservationBatch<Detection, DetectionContext>,
-    result: &BatchResult<PlanarTrackFilter>,
+    core_batch: &ObservationBatch<Detection, DetectionContext, DetectionScanContext>,
+    result: &TrackingOutput<PlanarTrackFilter, TrackManagerDiagnostics<PlanarTrackFilter>>,
     diagnostics: &mut TrackerDiagnostics,
 ) {
-    let batch_diagnostics = result.diagnostics;
+    let batch_diagnostics = result.diagnostics.summary;
     diagnostics.candidate_pairs += batch_diagnostics.candidate_pairs;
     diagnostics.gated_out_pairs += batch_diagnostics.gated_out_pairs;
     diagnostics.invalid_candidate_pairs += batch_diagnostics.invalid_candidate_pairs;
     diagnostics.selected_associations += batch_diagnostics.selected_associations;
     diagnostics.missed_updates += batch_diagnostics.missed_updates;
+    diagnostics.coasted_updates += batch_diagnostics.coasted_updates;
     diagnostics.created_tracks += batch_diagnostics.created_tracks;
     diagnostics.confirmed_tracks += batch_diagnostics.confirmed_tracks;
     diagnostics.deleted_tracks += batch_diagnostics.deleted_tracks;
     diagnostics.applied_updates +=
         batch_diagnostics.selected_associations + batch_diagnostics.created_tracks;
 
-    let selected = selected_observation_ids(&result.association);
+    let selected = selected_observation_ids(&result.diagnostics.association);
     for observation in &core_batch.observations {
         if selected.contains(observation.id.as_str()) {
             match observation.payload {
@@ -262,8 +320,8 @@ fn collect_diagnostics(
 
 fn collect_history(
     batch: &DetectionBatch,
-    core_batch: &ObservationBatch<Detection, DetectionContext>,
-    result: &BatchResult<PlanarTrackFilter>,
+    core_batch: &ObservationBatch<Detection, DetectionContext, DetectionScanContext>,
+    result: &TrackingOutput<PlanarTrackFilter, TrackManagerDiagnostics<PlanarTrackFilter>>,
     config: &ObjectTrackerConfig,
     history: &mut TrackerHistory,
 ) {
@@ -273,10 +331,10 @@ fn collect_history(
         .enumerate()
         .map(|(index, observation)| (observation.id.as_str(), (index, observation)))
         .collect::<BTreeMap<_, _>>();
-    let selected = selected_pairs(&result.association);
+    let selected = selected_pairs(&result.diagnostics.association);
     history
         .associations
-        .extend(result.hypotheses.iter().map(|hypothesis| {
+        .extend(result.diagnostics.hypotheses.iter().map(|hypothesis| {
             let (detection_index, observation) = observations[hypothesis.observation_id.as_str()];
             let is_selected = selected.contains(&(
                 hypothesis.track_id.as_str(),
@@ -314,12 +372,13 @@ fn collect_history(
             LifecycleRecord {
                 measurement_time_ns: event.time_ns,
                 arrival_time_ns: batch.arrival_time_ns,
-                sensor: batch.sensor,
+                sensor: core_batch.context.sensor,
                 track_id: event.track_id.to_string(),
                 event: match event.kind {
                     fusion_tracking::LifecycleEventKind::Created => LifecycleEventKind::Created,
                     fusion_tracking::LifecycleEventKind::Confirmed => LifecycleEventKind::Confirmed,
                     fusion_tracking::LifecycleEventKind::Missed => LifecycleEventKind::Missed,
+                    fusion_tracking::LifecycleEventKind::Coasted => LifecycleEventKind::Coasted,
                     fusion_tracking::LifecycleEventKind::Deleted => LifecycleEventKind::Deleted,
                 },
                 detection,
@@ -489,6 +548,8 @@ mod tests {
         ];
         let result = run(
             &ObjectTrackerConfig::default(),
+            &CameraConfig::default(),
+            &LidarConfig::default(),
             &measurements,
             &history(1_000_000_000),
         )?;
@@ -525,6 +586,8 @@ mod tests {
                 confirmation_hits: 1,
                 ..ObjectTrackerConfig::default()
             },
+            &CameraConfig::default(),
+            &LidarConfig::default(),
             &measurements,
             &history(1_000_000_000),
         )?;
@@ -561,6 +624,8 @@ mod tests {
                 gate_sigma: 0.1,
                 ..ObjectTrackerConfig::default()
             },
+            &CameraConfig::default(),
+            &LidarConfig::default(),
             &measurements,
             &history(1_000_000_000),
         )?;
@@ -603,12 +668,48 @@ mod tests {
                 max_time_without_update_s: 1.5,
                 ..ObjectTrackerConfig::default()
             },
+            &CameraConfig::default(),
+            &LidarConfig::default(),
             &measurements,
             &history(2_500_000_000),
         )?;
         assert_eq!(result.frames[2].tracks.len(), 1);
         assert!(result.frames[3].tracks.is_empty());
         assert_eq!(result.diagnostics.deleted_tracks, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_camera_frame_outside_coverage_does_not_delete_track() -> Result<()> {
+        let measurements = vec![
+            PerceptionMeasurement::Lidar(LidarScan {
+                time: Some(time(0)),
+                detections: vec![detection(5.0, 0.0, 0)],
+            }),
+            PerceptionMeasurement::Camera(CameraFrame {
+                time: Some(time(2_000_000_000)),
+                detections: Vec::new(),
+            }),
+        ];
+        let result = run(
+            &ObjectTrackerConfig {
+                confirmation_hits: 1,
+                max_time_without_update_s: 1.0,
+                ..ObjectTrackerConfig::default()
+            },
+            &CameraConfig {
+                max_range_m: 1.0,
+                ..CameraConfig::default()
+            },
+            &LidarConfig::default(),
+            &measurements,
+            &history(2_000_000_000),
+        )?;
+
+        assert_eq!(result.diagnostics.coasted_updates, 1);
+        assert_eq!(result.diagnostics.missed_updates, 0);
+        assert_eq!(result.diagnostics.deleted_tracks, 0);
+        assert_eq!(result.frames.last().unwrap().tracks.len(), 1);
         Ok(())
     }
 
@@ -634,6 +735,8 @@ mod tests {
                 max_time_without_update_s: 2.0,
                 ..ObjectTrackerConfig::default()
             },
+            &CameraConfig::default(),
+            &LidarConfig::default(),
             &measurements,
             &history(2_000_000_000),
         )?;
@@ -650,7 +753,14 @@ mod tests {
             time: None,
             detections: Vec::new(),
         })];
-        let error = run(&ObjectTrackerConfig::default(), &measurements, &history(0)).unwrap_err();
+        let error = run(
+            &ObjectTrackerConfig::default(),
+            &CameraConfig::default(),
+            &LidarConfig::default(),
+            &measurements,
+            &history(0),
+        )
+        .unwrap_err();
         assert_eq!(error.to_string(), "perception measurement has no time");
     }
 }

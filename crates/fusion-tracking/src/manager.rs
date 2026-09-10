@@ -1,21 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AssociationEngine, AssociationPlan, BatchDiagnostics, GateDecision, HypothesisModel, Initiator,
+    AssociationEngine, AssociationEvidence, AssociationPlan, BatchDiagnostics,
+    DetectionOpportunity, GateDecision, HypothesisModel, InitiationCandidate, Initiator,
     LifecycleEvent, LifecycleEventKind, LifecyclePolicy, ManagedTrack, ObservationBatch,
-    ObservationId, PairHypothesis, PosteriorReducer, TimedObservation, TrackId, TrackMarginal,
-    TrackStatus, WeightedPosterior,
+    ObservationId, PairHypothesis, PosteriorReducer, TimedObservation, TrackDetectionOpportunity,
+    TrackId, TrackIdentity, TrackMarginal, TrackReport, TrackStatus, TrackUpdate, Tracker,
+    TrackingOutput, WeightedPosterior,
 };
 
 #[derive(Debug, Clone)]
-pub struct BatchResult<S> {
-    pub measurement_time_ns: i64,
-    pub arrival_time_ns: i64,
-    pub tracks: Vec<ManagedTrack<S>>,
+pub struct TrackManagerDiagnostics<S> {
+    pub summary: BatchDiagnostics,
     pub hypotheses: Vec<PairHypothesis<S>>,
     pub association: AssociationPlan,
-    pub lifecycle: Vec<LifecycleEvent<S>>,
-    pub diagnostics: BatchDiagnostics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +33,13 @@ impl std::fmt::Display for TrackManagerError {
 
 impl std::error::Error for TrackManagerError {}
 
-pub struct TrackManager<S, D, C, M, A, R, I, L> {
+/// Scan-by-scan manager for point detections and one retained state per track.
+///
+/// One batch is one mutual-exclusion domain: a hard association permits at
+/// most one observation per track and at most one track per observation. The
+/// complete batch is staged before commit, so an error leaves the manager at
+/// the end of its previous successful batch.
+pub struct TrackManager<S, D, C, B, M, A, R, I, L> {
     model: M,
     association: A,
     reducer: R,
@@ -43,16 +47,16 @@ pub struct TrackManager<S, D, C, M, A, R, I, L> {
     lifecycle: L,
     tracks: BTreeMap<TrackId, ManagedTrack<S>>,
     next_track_number: u64,
-    marker: std::marker::PhantomData<(D, C)>,
+    marker: std::marker::PhantomData<(D, C, B)>,
 }
 
-impl<S, D, C, M, A, R, I, L> TrackManager<S, D, C, M, A, R, I, L>
+impl<S, D, C, B, M, A, R, I, L> TrackManager<S, D, C, B, M, A, R, I, L>
 where
     S: Clone,
-    M: HypothesisModel<S, D, C>,
-    A: AssociationEngine<S>,
+    M: HypothesisModel<S, D, C, B>,
+    A: AssociationEngine<S, D, C, B>,
     R: PosteriorReducer<S>,
-    I: Initiator<S, D, C> + Clone,
+    I: Initiator<S, D, C, B> + Clone,
     L: LifecyclePolicy<S> + Clone,
 {
     pub fn new(model: M, association: A, reducer: R, initiator: I, lifecycle: L) -> Self {
@@ -68,10 +72,10 @@ where
         }
     }
 
-    pub fn process_batch(
+    fn process_batch(
         &mut self,
-        batch: &ObservationBatch<D, C>,
-    ) -> Result<BatchResult<S>, TrackManagerError> {
+        batch: &ObservationBatch<D, C, B>,
+    ) -> Result<TrackingOutput<S, TrackManagerDiagnostics<S>>, TrackManagerError> {
         validate_batch(batch)?;
         // Commit these batch-local copies only after every fallible stage succeeds.
         let mut staged_tracks = self.tracks.clone();
@@ -85,6 +89,31 @@ where
             .iter()
             .map(|observation| observation.id.clone())
             .collect::<Vec<_>>();
+        let mut detection_opportunities = Vec::with_capacity(track_ids.len());
+        for track_id in &track_ids {
+            let track = &staged_tracks[track_id];
+            let predicted_at_output_time = self
+                .model
+                .predict(&track.state, output_time_ns)
+                .map_err(|error| {
+                    TrackManagerError::new(format!(
+                        "detection-opportunity prediction failed for track {track_id} at {output_time_ns} ns: {error}"
+                    ))
+                })?;
+            let opportunity = self
+                .model
+                .detection_opportunity(&predicted_at_output_time, output_time_ns, &batch.context)
+                .map_err(|error| {
+                    TrackManagerError::new(format!(
+                        "detection opportunity failed for track {track_id} at {output_time_ns} ns: {error}"
+                    ))
+                })?;
+            validate_detection_opportunity(opportunity)?;
+            detection_opportunities.push(TrackDetectionOpportunity {
+                track_id: track_id.clone(),
+                opportunity,
+            });
+        }
         let mut hypotheses = Vec::with_capacity(track_ids.len() * observation_ids.len());
 
         for track_id in &track_ids {
@@ -119,7 +148,13 @@ where
 
         let association = self
             .association
-            .associate(&track_ids, &observation_ids, &hypotheses)
+            .associate(
+                batch,
+                &track_ids,
+                &observation_ids,
+                &hypotheses,
+                &detection_opportunities,
+            )
             .map_err(|error| TrackManagerError::new(format!("association failed: {error}")))?;
         validate_plan(&association, &track_ids, &observation_ids, &hypotheses)?;
 
@@ -154,40 +189,18 @@ where
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let opportunity_lookup = detection_opportunities
+            .iter()
+            .map(|value| (&value.track_id, value.opportunity))
+            .collect::<BTreeMap<_, _>>();
 
         for marginal in &marginals {
-            if marginal.observation_probabilities.is_empty() {
-                let track = &staged_tracks[&marginal.track_id];
-                let predicted = self
-                    .model
-                    .predict(&track.state, output_time_ns)
-                    .map_err(|error| {
-                        TrackManagerError::new(format!(
-                            "missed-track prediction failed for track {} at {output_time_ns} ns: {error}",
-                            marginal.track_id
-                        ))
-                    })?;
-                let track = staged_tracks
-                    .get_mut(&marginal.track_id)
-                    .expect("validated association references a live track");
-                staged_lifecycle.after_miss(track, output_time_ns);
-                diagnostics.missed_updates += 1;
-                lifecycle.push(event(
-                    track,
-                    LifecycleEventKind::Missed,
-                    output_time_ns,
-                    None,
-                    predicted,
-                ));
-                continue;
-            }
-
             let reduction_time_ns = marginal
                 .observation_probabilities
                 .iter()
                 .map(|(observation_id, _)| observation(batch, observation_id).measurement_time_ns)
                 .max()
-                .expect("nonempty marginal has a measurement time");
+                .unwrap_or(output_time_ns);
             let track = &staged_tracks[&marginal.track_id];
             let predicted_at_reduction_time = self
                 .model
@@ -198,6 +211,7 @@ where
                     marginal.track_id
                 ))
             })?;
+            let detection_opportunity = opportunity_lookup[&marginal.track_id];
             let candidate_states = marginal
                 .observation_probabilities
                 .iter()
@@ -228,54 +242,112 @@ where
                     probability: *probability,
                 })
                 .collect::<Vec<_>>();
-            let reduced_state = self
-                .reducer
-                .reduce(
-                    reduction_time_ns,
-                    &predicted_at_reduction_time,
-                    &candidates,
-                    marginal.missed_probability,
-                )
-                .map_err(|error| {
-                    TrackManagerError::new(format!(
-                        "posterior reduction failed for track {} at {reduction_time_ns} ns: {error}",
-                        marginal.track_id
-                    ))
-                })?;
+            let hard_miss = matches!(association, AssociationPlan::Hard(_))
+                && marginal.observation_probabilities.is_empty();
+            let reduced_state = if hard_miss {
+                track.state.clone()
+            } else {
+                self.reducer
+                    .reduce(
+                        reduction_time_ns,
+                        &predicted_at_reduction_time,
+                        &candidates,
+                        marginal.missed_probability,
+                    )
+                    .map_err(|error| {
+                        TrackManagerError::new(format!(
+                            "posterior reduction failed for track {} at {reduction_time_ns} ns: {error}",
+                            marginal.track_id
+                        ))
+                    })?
+            };
             let track = staged_tracks
                 .get_mut(&marginal.track_id)
                 .expect("validated association references a live track");
             track.state = reduced_state;
             let was_confirmed = track.status == TrackStatus::Confirmed;
-            staged_lifecycle.after_hit(track, reduction_time_ns);
-            if !was_confirmed && track.status == TrackStatus::Confirmed {
-                diagnostics.confirmed_tracks += 1;
-                lifecycle.push(event(
-                    track,
-                    LifecycleEventKind::Confirmed,
-                    reduction_time_ns,
-                    None,
-                    track.state.clone(),
-                ));
+            let associated_probability = marginal
+                .observation_probabilities
+                .iter()
+                .map(|(_, probability)| probability)
+                .sum();
+            let evidence = AssociationEvidence {
+                associated_probability,
+                missed_probability: marginal.missed_probability,
+                detection_opportunity,
+            };
+            let update_time_ns = if marginal.observation_probabilities.is_empty() {
+                output_time_ns
+            } else {
+                reduction_time_ns
+            };
+            match staged_lifecycle.update(track, update_time_ns, evidence) {
+                TrackUpdate::Hit => {
+                    if !was_confirmed && track.status == TrackStatus::Confirmed {
+                        diagnostics.confirmed_tracks += 1;
+                        lifecycle.push(event(
+                            track,
+                            LifecycleEventKind::Confirmed,
+                            update_time_ns,
+                            None,
+                            track.state.clone(),
+                        ));
+                    }
+                }
+                TrackUpdate::Miss => {
+                    diagnostics.missed_updates += 1;
+                    let event_state = if hard_miss {
+                        predicted_at_reduction_time.clone()
+                    } else {
+                        track.state.clone()
+                    };
+                    lifecycle.push(event(
+                        track,
+                        LifecycleEventKind::Missed,
+                        update_time_ns,
+                        None,
+                        event_state,
+                    ));
+                }
+                TrackUpdate::Coast => {
+                    diagnostics.coasted_updates += 1;
+                    let event_state = if hard_miss {
+                        predicted_at_reduction_time.clone()
+                    } else {
+                        track.state.clone()
+                    };
+                    lifecycle.push(event(
+                        track,
+                        LifecycleEventKind::Coasted,
+                        update_time_ns,
+                        None,
+                        event_state,
+                    ));
+                }
             }
         }
 
-        let used_observations = association_observations(&association);
-        let unused = batch
+        let unassigned_probabilities =
+            unassigned_observation_probabilities(&association, &observation_ids);
+        let candidates = batch
             .observations
             .iter()
-            .filter(|observation| !used_observations.contains(&observation.id))
+            .map(|observation| InitiationCandidate {
+                observation,
+                unassigned_probability: unassigned_probabilities[&observation.id],
+            })
             .collect::<Vec<_>>();
         let initiated = staged_initiator
-            .initiate(&unused)
+            .initiate(&batch.context, &candidates)
             .map_err(|error| TrackManagerError::new(format!("initiation failed: {error}")))?;
-        let unused_ids = unused
+        let available_ids = candidates
             .iter()
-            .map(|observation| &observation.id)
+            .filter(|candidate| candidate.unassigned_probability > 0.0)
+            .map(|candidate| &candidate.observation.id)
             .collect::<BTreeSet<_>>();
         let mut initiated_ids = BTreeSet::new();
         for initiated_track in initiated {
-            if !unused_ids.contains(&initiated_track.observation_id)
+            if !available_ids.contains(&initiated_track.observation_id)
                 || !initiated_ids.insert(initiated_track.observation_id.clone())
             {
                 return Err(TrackManagerError::new(
@@ -294,6 +366,7 @@ where
                 hit_count: 0,
                 miss_count: 0,
                 last_update_time_ns: observation.measurement_time_ns,
+                last_observable_time_ns: observation.measurement_time_ns,
             };
             lifecycle.push(event(
                 &track,
@@ -303,7 +376,18 @@ where
                 track.state.clone(),
             ));
             diagnostics.created_tracks += 1;
-            staged_lifecycle.after_hit(&mut track, observation.measurement_time_ns);
+            let update = staged_lifecycle.update(
+                &mut track,
+                observation.measurement_time_ns,
+                AssociationEvidence {
+                    associated_probability: 1.0,
+                    missed_probability: 0.0,
+                    detection_opportunity: DetectionOpportunity::Observable {
+                        detection_probability: 1.0,
+                    },
+                },
+            );
+            debug_assert_eq!(update, TrackUpdate::Hit);
             if track.status == TrackStatus::Confirmed {
                 lifecycle.push(event(
                     &track,
@@ -347,16 +431,20 @@ where
             .values()
             .filter(|track| track.status == TrackStatus::Confirmed)
             .map(|track| {
-                let mut output = track.clone();
-                output.state = self.model.predict(&track.state, output_time_ns).map_err(
-                    |error| {
+                let state = self
+                    .model
+                    .predict(&track.state, output_time_ns)
+                    .map_err(|error| {
                         TrackManagerError::new(format!(
                             "output prediction failed for track {} at {output_time_ns} ns: {error}",
                             track.id
                         ))
-                    },
-                )?;
-                Ok(output)
+                    })?;
+                Ok(TrackReport {
+                    identity: TrackIdentity::Labeled(track.id.clone()),
+                    state,
+                    status: track.status,
+                })
             })
             .collect::<Result<Vec<_>, TrackManagerError>>()?;
 
@@ -365,19 +453,43 @@ where
         self.lifecycle = staged_lifecycle;
         self.next_track_number = staged_next_track_number;
 
-        Ok(BatchResult {
+        Ok(TrackingOutput {
             measurement_time_ns: output_time_ns,
             arrival_time_ns: batch.arrival_time_ns,
             tracks: output_tracks,
-            hypotheses,
-            association,
             lifecycle,
-            diagnostics,
+            diagnostics: TrackManagerDiagnostics {
+                summary: diagnostics,
+                hypotheses,
+                association,
+            },
         })
     }
 }
 
-fn validate_batch<D, C>(batch: &ObservationBatch<D, C>) -> Result<(), TrackManagerError> {
+impl<S, D, C, B, M, A, R, I, L> Tracker<ObservationBatch<D, C, B>>
+    for TrackManager<S, D, C, B, M, A, R, I, L>
+where
+    S: Clone,
+    M: HypothesisModel<S, D, C, B>,
+    A: AssociationEngine<S, D, C, B>,
+    R: PosteriorReducer<S>,
+    I: Initiator<S, D, C, B> + Clone,
+    L: LifecyclePolicy<S> + Clone,
+{
+    type State = S;
+    type Diagnostics = TrackManagerDiagnostics<S>;
+    type Error = TrackManagerError;
+
+    fn process_scan(
+        &mut self,
+        scan: &ObservationBatch<D, C, B>,
+    ) -> Result<TrackingOutput<S, TrackManagerDiagnostics<S>>, Self::Error> {
+        self.process_batch(scan)
+    }
+}
+
+fn validate_batch<D, C, B>(batch: &ObservationBatch<D, C, B>) -> Result<(), TrackManagerError> {
     let mut ids = BTreeSet::new();
     if batch
         .observations
@@ -540,27 +652,57 @@ fn selected_pair_count(plan: &AssociationPlan) -> usize {
     }
 }
 
-fn association_observations(plan: &AssociationPlan) -> BTreeSet<ObservationId> {
+fn unassigned_observation_probabilities(
+    plan: &AssociationPlan,
+    observation_ids: &[ObservationId],
+) -> BTreeMap<ObservationId, f64> {
+    let mut probabilities = observation_ids
+        .iter()
+        .cloned()
+        .map(|observation_id| (observation_id, 1.0))
+        .collect::<BTreeMap<_, _>>();
     match plan {
-        AssociationPlan::Hard(assignments) => assignments
-            .iter()
-            .map(|assignment| assignment.observation_id.clone())
-            .collect(),
-        AssociationPlan::Marginal(marginals) => marginals
-            .iter()
-            .flat_map(|marginal| {
-                marginal
-                    .observation_probabilities
-                    .iter()
-                    .filter(|(_, probability)| *probability > 0.0)
-                    .map(|(observation_id, _)| observation_id.clone())
-            })
-            .collect(),
+        AssociationPlan::Hard(assignments) => {
+            for assignment in assignments {
+                probabilities.insert(assignment.observation_id.clone(), 0.0);
+            }
+        }
+        AssociationPlan::Marginal(marginals) => {
+            for marginal in marginals {
+                for (observation_id, probability) in &marginal.observation_probabilities {
+                    *probabilities
+                        .get_mut(observation_id)
+                        .expect("validated association references a known observation") -=
+                        probability;
+                }
+            }
+            for probability in probabilities.values_mut() {
+                if probability.abs() <= 1.0e-9 {
+                    *probability = 0.0;
+                }
+            }
+        }
     }
+    probabilities
 }
 
-fn observation<'a, D, C>(
-    batch: &'a ObservationBatch<D, C>,
+fn validate_detection_opportunity(
+    opportunity: DetectionOpportunity,
+) -> Result<(), TrackManagerError> {
+    if let DetectionOpportunity::Observable {
+        detection_probability,
+    } = opportunity
+        && (!detection_probability.is_finite() || !(0.0..=1.0).contains(&detection_probability))
+    {
+        return Err(TrackManagerError::new(
+            "detection probability must be finite and between zero and one",
+        ));
+    }
+    Ok(())
+}
+
+fn observation<'a, D, C, B>(
+    batch: &'a ObservationBatch<D, C, B>,
     id: &ObservationId,
 ) -> &'a TimedObservation<D, C> {
     batch
@@ -605,7 +747,7 @@ mod tests {
 
     struct Model;
 
-    impl HypothesisModel<State, f64, ()> for Model {
+    impl HypothesisModel<State, f64, (), ()> for Model {
         type Error = Infallible;
 
         fn predict(&self, state: &State, time_ns: i64) -> Result<State, Self::Error> {
@@ -636,25 +778,38 @@ mod tests {
                 },
             })
         }
+
+        fn detection_opportunity(
+            &self,
+            _predicted: &State,
+            _measurement_time_ns: i64,
+            _context: &(),
+        ) -> Result<DetectionOpportunity, Self::Error> {
+            Ok(DetectionOpportunity::Observable {
+                detection_probability: 1.0,
+            })
+        }
     }
 
     #[derive(Clone, Default)]
     struct TestInitiator;
 
-    impl Initiator<State, f64, ()> for TestInitiator {
+    impl Initiator<State, f64, (), ()> for TestInitiator {
         type Error = Infallible;
 
         fn initiate(
             &mut self,
-            observations: &[&TimedObservation<f64, ()>],
+            _context: &(),
+            candidates: &[InitiationCandidate<'_, f64, ()>],
         ) -> Result<Vec<InitiatedTrack<State>>, Self::Error> {
-            Ok(observations
+            Ok(candidates
                 .iter()
-                .map(|observation| InitiatedTrack {
-                    observation_id: observation.id.clone(),
+                .filter(|candidate| candidate.unassigned_probability >= 0.5)
+                .map(|candidate| InitiatedTrack {
+                    observation_id: candidate.observation.id.clone(),
                     state: State {
-                        value: observation.payload,
-                        time_ns: observation.measurement_time_ns,
+                        value: candidate.observation.payload,
+                        time_ns: candidate.observation.measurement_time_ns,
                     },
                 })
                 .collect())
@@ -666,11 +821,12 @@ mod tests {
         measurement: i64,
         arrival: i64,
         values: &[f64],
-    ) -> ObservationBatch<f64, ()> {
+    ) -> ObservationBatch<f64, (), ()> {
         ObservationBatch {
             id: id.into(),
             measurement_time_ns: measurement,
             arrival_time_ns: arrival,
+            context: (),
             observations: values
                 .iter()
                 .enumerate()
@@ -688,6 +844,7 @@ mod tests {
         State,
         f64,
         (),
+        (),
         Model,
         GlobalNearestNeighbor,
         SinglePosteriorReducer,
@@ -704,6 +861,7 @@ mod tests {
             HitCountLifecycle {
                 confirmation_hits: 2,
                 max_time_without_update_ns: 20,
+                hit_probability_threshold: 0.5,
             },
         )
     }
@@ -711,8 +869,8 @@ mod tests {
     #[test]
     fn prediction_uses_measurement_time_not_arrival_time() -> Result<(), Box<dyn Error>> {
         let mut manager = manager();
-        manager.process_batch(&batch("first", 10, 100, &[2.0]))?;
-        let result = manager.process_batch(&batch("second", 15, 200, &[2.0]))?;
+        manager.process_scan(&batch("first", 10, 100, &[2.0]))?;
+        let result = manager.process_scan(&batch("second", 15, 200, &[2.0]))?;
         assert_eq!(result.tracks[0].state.time_ns, 15);
         assert_ne!(result.tracks[0].state.time_ns, result.arrival_time_ns);
         Ok(())
@@ -721,19 +879,19 @@ mod tests {
     #[test]
     fn lifecycle_orders_confirmation_miss_and_deletion() -> Result<(), Box<dyn Error>> {
         let mut manager = manager();
-        let created = manager.process_batch(&batch("first", 0, 0, &[2.0]))?;
+        let created = manager.process_scan(&batch("first", 0, 0, &[2.0]))?;
         assert_eq!(created.lifecycle[0].kind, LifecycleEventKind::Created);
         assert!(created.tracks.is_empty());
 
-        let confirmed = manager.process_batch(&batch("second", 5, 5, &[2.0]))?;
+        let confirmed = manager.process_scan(&batch("second", 5, 5, &[2.0]))?;
         assert_eq!(confirmed.lifecycle[0].kind, LifecycleEventKind::Confirmed);
         assert_eq!(confirmed.tracks[0].status, TrackStatus::Confirmed);
 
-        let missed = manager.process_batch(&batch("third", 10, 10, &[]))?;
+        let missed = manager.process_scan(&batch("third", 10, 10, &[]))?;
         assert_eq!(missed.lifecycle[0].kind, LifecycleEventKind::Missed);
-        assert_eq!(missed.diagnostics.deleted_tracks, 0);
+        assert_eq!(missed.diagnostics.summary.deleted_tracks, 0);
 
-        let deleted = manager.process_batch(&batch("fourth", 25, 25, &[]))?;
+        let deleted = manager.process_scan(&batch("fourth", 25, 25, &[]))?;
         assert_eq!(deleted.lifecycle[0].kind, LifecycleEventKind::Missed);
         assert_eq!(deleted.lifecycle[1].kind, LifecycleEventKind::Deleted);
         assert!(deleted.tracks.is_empty());
@@ -743,12 +901,24 @@ mod tests {
     #[test]
     fn output_and_events_are_deterministically_ordered() -> Result<(), Box<dyn Error>> {
         let mut manager = manager();
-        manager.process_batch(&batch("first", 0, 0, &[8.0, 2.0]))?;
-        let result = manager.process_batch(&batch("second", 1, 1, &[2.0, 8.0]))?;
-        assert_eq!(result.tracks[0].id.as_str(), "track-001");
-        assert_eq!(result.tracks[1].id.as_str(), "track-002");
-        assert_eq!(result.hypotheses[0].track_id.as_str(), "track-001");
-        assert_eq!(result.hypotheses[0].observation_id.as_str(), "second:0");
+        manager.process_scan(&batch("first", 0, 0, &[8.0, 2.0]))?;
+        let result = manager.process_scan(&batch("second", 1, 1, &[2.0, 8.0]))?;
+        assert_eq!(
+            result.tracks[0].identity.track_id().unwrap().as_str(),
+            "track-001"
+        );
+        assert_eq!(
+            result.tracks[1].identity.track_id().unwrap().as_str(),
+            "track-002"
+        );
+        assert_eq!(
+            result.diagnostics.hypotheses[0].track_id.as_str(),
+            "track-001"
+        );
+        assert_eq!(
+            result.diagnostics.hypotheses[0].observation_id.as_str(),
+            "second:0"
+        );
         Ok(())
     }
 
@@ -785,14 +955,16 @@ mod tests {
 
     struct AllObservationsMarginal;
 
-    impl AssociationEngine<State> for AllObservationsMarginal {
+    impl AssociationEngine<State, f64, (), ()> for AllObservationsMarginal {
         type Error = Infallible;
 
         fn associate(
             &self,
+            _batch: &ObservationBatch<f64, (), ()>,
             track_ids: &[TrackId],
             observation_ids: &[ObservationId],
             _hypotheses: &[PairHypothesis<State>],
+            _detection_opportunities: &[TrackDetectionOpportunity],
         ) -> Result<AssociationPlan, Self::Error> {
             let probability = 1.0 / observation_ids.len() as f64;
             Ok(AssociationPlan::Marginal(
@@ -814,7 +986,7 @@ mod tests {
 
     struct MovingModel;
 
-    impl HypothesisModel<State, f64, ()> for MovingModel {
+    impl HypothesisModel<State, f64, (), ()> for MovingModel {
         type Error = Infallible;
 
         fn predict(&self, state: &State, time_ns: i64) -> Result<State, Self::Error> {
@@ -838,6 +1010,17 @@ mod tests {
                         time_ns: observation.measurement_time_ns,
                     },
                 },
+            })
+        }
+
+        fn detection_opportunity(
+            &self,
+            _predicted: &State,
+            _measurement_time_ns: i64,
+            _context: &(),
+        ) -> Result<DetectionOpportunity, Self::Error> {
+            Ok(DetectionOpportunity::Observable {
+                detection_probability: 1.0,
             })
         }
     }
@@ -864,6 +1047,54 @@ mod tests {
         }
     }
 
+    struct LowConfidenceMarginal;
+
+    impl AssociationEngine<State, f64, (), ()> for LowConfidenceMarginal {
+        type Error = Infallible;
+
+        fn associate(
+            &self,
+            _batch: &ObservationBatch<f64, (), ()>,
+            track_ids: &[TrackId],
+            observation_ids: &[ObservationId],
+            _hypotheses: &[PairHypothesis<State>],
+            _detection_opportunities: &[TrackDetectionOpportunity],
+        ) -> Result<AssociationPlan, Self::Error> {
+            Ok(AssociationPlan::Marginal(
+                track_ids
+                    .iter()
+                    .map(|track_id| TrackMarginal {
+                        track_id: track_id.clone(),
+                        missed_probability: 0.9,
+                        observation_probabilities: vec![(observation_ids[0].clone(), 0.1)],
+                    })
+                    .collect(),
+            ))
+        }
+    }
+
+    #[test]
+    fn marginal_probabilities_control_lifecycle_and_initiation() -> Result<(), Box<dyn Error>> {
+        let mut manager = TrackManager::new(
+            Model,
+            LowConfidenceMarginal,
+            MeanReducer,
+            TestInitiator,
+            HitCountLifecycle {
+                confirmation_hits: 1,
+                max_time_without_update_ns: 100,
+                hit_probability_threshold: 0.5,
+            },
+        );
+        manager.process_scan(&batch("first", 0, 0, &[0.0]))?;
+        let result = manager.process_scan(&batch("second", 1, 1, &[1.0]))?;
+
+        assert_eq!(result.diagnostics.summary.missed_updates, 1);
+        assert_eq!(result.diagnostics.summary.created_tracks, 1);
+        assert_eq!(result.tracks.len(), 2);
+        Ok(())
+    }
+
     #[test]
     fn marginal_posteriors_are_reduced_at_one_time() -> Result<(), Box<dyn Error>> {
         let mut manager = TrackManager::new(
@@ -874,13 +1105,15 @@ mod tests {
             HitCountLifecycle {
                 confirmation_hits: 1,
                 max_time_without_update_ns: 100,
+                hit_probability_threshold: 0.5,
             },
         );
-        manager.process_batch(&batch("first", 0, 0, &[0.0]))?;
+        manager.process_scan(&batch("first", 0, 0, &[0.0]))?;
         let second = ObservationBatch {
             id: "second".into(),
             measurement_time_ns: 10,
             arrival_time_ns: 30,
+            context: (),
             observations: vec![
                 TimedObservation {
                     id: "second:0".into(),
@@ -896,35 +1129,150 @@ mod tests {
                 },
             ],
         };
-        let result = manager.process_batch(&second)?;
+        let result = manager.process_scan(&second)?;
         assert_eq!(result.tracks[0].state.value, 20.0);
         assert_eq!(result.tracks[0].state.time_ns, 20);
+        Ok(())
+    }
+
+    struct CoverageModel;
+
+    impl HypothesisModel<State, f64, (), bool> for CoverageModel {
+        type Error = Infallible;
+
+        fn predict(&self, state: &State, time_ns: i64) -> Result<State, Self::Error> {
+            Ok(State {
+                value: state.value,
+                time_ns,
+            })
+        }
+
+        fn hypothesize(
+            &self,
+            _predicted: &State,
+            observation: &TimedObservation<f64, ()>,
+        ) -> Result<ObservationHypothesis<State>, Self::Error> {
+            Ok(ObservationHypothesis {
+                normalized_innovation_squared: Some(0.0),
+                log_likelihood: None,
+                outcome: HypothesisOutcome::Inside {
+                    posterior: State {
+                        value: observation.payload,
+                        time_ns: observation.measurement_time_ns,
+                    },
+                },
+            })
+        }
+
+        fn detection_opportunity(
+            &self,
+            _predicted: &State,
+            _measurement_time_ns: i64,
+            context: &bool,
+        ) -> Result<DetectionOpportunity, Self::Error> {
+            Ok(if *context {
+                DetectionOpportunity::Observable {
+                    detection_probability: 1.0,
+                }
+            } else {
+                DetectionOpportunity::NotObservable
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct CoverageInitiator;
+
+    impl Initiator<State, f64, (), bool> for CoverageInitiator {
+        type Error = Infallible;
+
+        fn initiate(
+            &mut self,
+            _context: &bool,
+            candidates: &[InitiationCandidate<'_, f64, ()>],
+        ) -> Result<Vec<InitiatedTrack<State>>, Self::Error> {
+            Ok(candidates
+                .iter()
+                .map(|candidate| InitiatedTrack {
+                    observation_id: candidate.observation.id.clone(),
+                    state: State {
+                        value: candidate.observation.payload,
+                        time_ns: candidate.observation.measurement_time_ns,
+                    },
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn empty_scan_outside_coverage_coasts_without_deleting() -> Result<(), Box<dyn Error>> {
+        let mut manager = TrackManager::new(
+            CoverageModel,
+            GlobalNearestNeighbor {
+                missed_assignment_cost: 26.0,
+            },
+            SinglePosteriorReducer,
+            CoverageInitiator,
+            HitCountLifecycle {
+                confirmation_hits: 1,
+                max_time_without_update_ns: 10,
+                hit_probability_threshold: 0.5,
+            },
+        );
+        let first = ObservationBatch {
+            id: "first".into(),
+            measurement_time_ns: 0,
+            arrival_time_ns: 0,
+            context: true,
+            observations: vec![TimedObservation {
+                id: "first:0".into(),
+                measurement_time_ns: 0,
+                payload: 1.0,
+                context: (),
+            }],
+        };
+        manager.process_scan(&first)?;
+        let outside_coverage = ObservationBatch {
+            id: "outside".into(),
+            measurement_time_ns: 20,
+            arrival_time_ns: 20,
+            context: false,
+            observations: Vec::new(),
+        };
+        let result = manager.process_scan(&outside_coverage)?;
+
+        assert_eq!(result.diagnostics.summary.coasted_updates, 1);
+        assert_eq!(result.diagnostics.summary.missed_updates, 0);
+        assert_eq!(result.diagnostics.summary.deleted_tracks, 0);
+        assert_eq!(result.lifecycle[0].kind, LifecycleEventKind::Coasted);
+        assert_eq!(result.tracks.len(), 1);
         Ok(())
     }
 
     #[derive(Clone, Default)]
     struct FailingInitiator;
 
-    impl Initiator<State, f64, ()> for FailingInitiator {
+    impl Initiator<State, f64, (), ()> for FailingInitiator {
         type Error = std::io::Error;
 
         fn initiate(
             &mut self,
-            observations: &[&TimedObservation<f64, ()>],
+            _context: &(),
+            candidates: &[InitiationCandidate<'_, f64, ()>],
         ) -> Result<Vec<InitiatedTrack<State>>, Self::Error> {
-            if observations
+            if candidates
                 .iter()
-                .any(|observation| observation.payload == 999.0)
+                .any(|candidate| candidate.observation.payload == 999.0)
             {
                 return Err(std::io::Error::other("test initiation failure"));
             }
-            Ok(observations
+            Ok(candidates
                 .iter()
-                .map(|observation| InitiatedTrack {
-                    observation_id: observation.id.clone(),
+                .map(|candidate| InitiatedTrack {
+                    observation_id: candidate.observation.id.clone(),
                     state: State {
-                        value: observation.payload,
-                        time_ns: observation.measurement_time_ns,
+                        value: candidate.observation.payload,
+                        time_ns: candidate.observation.measurement_time_ns,
                     },
                 })
                 .collect())
@@ -943,18 +1291,19 @@ mod tests {
             HitCountLifecycle {
                 confirmation_hits: 1,
                 max_time_without_update_ns: 100,
+                hit_probability_threshold: 0.5,
             },
         );
-        manager.process_batch(&batch("first", 0, 0, &[0.0]))?;
+        manager.process_scan(&batch("first", 0, 0, &[0.0]))?;
         assert!(
             manager
-                .process_batch(&batch("failed", 1, 1, &[1.0, 999.0]))
+                .process_scan(&batch("failed", 1, 1, &[1.0, 999.0]))
                 .is_err()
         );
 
-        let result = manager.process_batch(&batch("after", 2, 2, &[]))?;
+        let result = manager.process_scan(&batch("after", 2, 2, &[]))?;
         assert_eq!(result.tracks[0].state.value, 0.0);
-        assert_eq!(result.tracks[0].hit_count, 1);
+        assert_eq!(result.tracks[0].status, TrackStatus::Confirmed);
         Ok(())
     }
 }

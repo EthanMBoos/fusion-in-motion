@@ -5,7 +5,10 @@ use fusion_schema::messages::{
 };
 use nalgebra::{SMatrix, Vector2};
 
-use crate::{math, scenario::ObjectTrackerConfig};
+use crate::{
+    math,
+    scenario::{CameraConfig, LidarConfig, ObjectTrackerConfig},
+};
 
 #[derive(Debug, Clone)]
 pub enum PerceptionMeasurement {
@@ -157,12 +160,24 @@ pub(super) struct DetectionContext {
     pub(super) ego_pose: Option<EgoPose>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DetectionScanContext {
+    pub(super) sensor: super::SensorKind,
+    pub(super) ego_pose: Option<EgoPose>,
+    pub(super) horizontal_fov_rad: f64,
+    pub(super) max_range_m: f64,
+    pub(super) detection_probability: f64,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DetectionBatch {
     pub(super) sensor: super::SensorKind,
     pub(super) measurement_time_ns: i64,
     pub(super) arrival_time_ns: i64,
     pub(super) stable_id: String,
+    pub(super) horizontal_fov_rad: f64,
+    pub(super) max_range_m: f64,
+    pub(super) detection_probability: f64,
     pub(super) detections: Vec<Detection>,
 }
 
@@ -229,7 +244,11 @@ pub(super) fn prepare_timing(
     }
 }
 
-pub(super) fn flatten(measurements: &[PerceptionMeasurement]) -> Result<Vec<DetectionBatch>> {
+pub(super) fn flatten(
+    camera_config: &CameraConfig,
+    lidar_config: &LidarConfig,
+    measurements: &[PerceptionMeasurement],
+) -> Result<Vec<DetectionBatch>> {
     measurements
         .iter()
         .enumerate()
@@ -241,6 +260,9 @@ pub(super) fn flatten(measurements: &[PerceptionMeasurement]) -> Result<Vec<Dete
                     measurement_time_ns: time.measurement_time_ns,
                     arrival_time_ns: time.arrival_time_ns,
                     stable_id: format!("camera:{record_index}"),
+                    horizontal_fov_rad: camera_config.horizontal_fov_rad,
+                    max_range_m: camera_config.max_range_m,
+                    detection_probability: camera_config.detection_probability,
                     detections: frame
                         .detections
                         .iter()
@@ -250,14 +272,12 @@ pub(super) fn flatten(measurements: &[PerceptionMeasurement]) -> Result<Vec<Dete
                 },
                 PerceptionMeasurement::Lidar(scan) => DetectionBatch {
                     sensor: super::SensorKind::Lidar,
-                    measurement_time_ns: scan
-                        .detections
-                        .iter()
-                        .map(|detection| detection.measurement_time_ns)
-                        .min()
-                        .unwrap_or(time.measurement_time_ns),
+                    measurement_time_ns: time.measurement_time_ns,
                     arrival_time_ns: time.arrival_time_ns,
                     stable_id: format!("lidar:{record_index}"),
+                    horizontal_fov_rad: lidar_config.horizontal_fov_rad,
+                    max_range_m: lidar_config.max_range_m,
+                    detection_probability: lidar_config.detection_probability,
                     detections: scan
                         .detections
                         .iter()

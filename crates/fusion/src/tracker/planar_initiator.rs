@@ -1,26 +1,35 @@
 use std::convert::Infallible;
 
-use fusion_tracking::{InitiatedTrack, Initiator, TimedObservation};
+use fusion_tracking::{InitiatedTrack, InitiationCandidate, Initiator};
 
 use super::{
-    input::{Detection, DetectionContext},
+    input::{Detection, DetectionContext, DetectionScanContext},
     planar_model::initialize,
     planar_state::PlanarTrackFilter,
 };
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct PlanarInitiator;
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PlanarInitiator {
+    pub(super) minimum_unassigned_probability: f64,
+}
 
-impl Initiator<PlanarTrackFilter, Detection, DetectionContext> for PlanarInitiator {
+impl Initiator<PlanarTrackFilter, Detection, DetectionContext, DetectionScanContext>
+    for PlanarInitiator
+{
     type Error = Infallible;
 
     fn initiate(
         &mut self,
-        observations: &[&TimedObservation<Detection, DetectionContext>],
+        _context: &DetectionScanContext,
+        candidates: &[InitiationCandidate<'_, Detection, DetectionContext>],
     ) -> Result<Vec<InitiatedTrack<PlanarTrackFilter>>, Self::Error> {
-        Ok(observations
+        Ok(candidates
             .iter()
-            .filter_map(|observation| {
+            .filter(|candidate| {
+                candidate.unassigned_probability >= self.minimum_unassigned_probability
+            })
+            .filter_map(|candidate| {
+                let observation = candidate.observation;
                 let Detection::Lidar(detection) = &observation.payload else {
                     return None;
                 };

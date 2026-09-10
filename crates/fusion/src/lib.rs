@@ -79,6 +79,8 @@ pub(crate) fn run_resolved_experiment(
     let estimated_history = EgoHistory::from_estimates(&ego_run.estimates)?;
     let estimated_tracker = tracker::run(
         &scenario.object_tracker,
+        &scenario.camera,
+        &scenario.lidar,
         &perception_measurements,
         &estimated_history,
     )?;
@@ -86,6 +88,8 @@ pub(crate) fn run_resolved_experiment(
     let truth_history = EgoHistory::from_truth(&generated.ego_truth_states)?;
     let truth_tracker = tracker::run(
         &scenario.object_tracker,
+        &scenario.camera,
+        &scenario.lidar,
         &perception_measurements,
         &truth_history,
     )?;

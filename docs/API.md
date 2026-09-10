@@ -1,7 +1,9 @@
 # Simulator API
 
 This page describes the planar simulator API. `fusion-tracking` contains the
-tracking loop and has no serialization dependency. See
+whole-tracker API, the point-target reference manager, and no serialization
+dependency. A scan carries scan-wide sensor context even when it has no
+detections. See
 [`TRACKING_ENGINE.md`](TRACKING_ENGINE.md) to use it from another repository.
 
 The messages in `proto/fusion.proto` match the planar simulator:
@@ -18,6 +20,10 @@ one-to-one assignment for the remaining pairs. Lidar can create a track because
 it measures range. Camera can update a track but cannot create one from a
 single direction measurement. `ObjectTrack.track_id` belongs to the tracker.
 Truth object IDs are read only by scoring and display code.
+
+The built-in `TrackManager` is one `Tracker` backend. Another backend can own
+its complete state machine and return the same timestamped track reports
+without using the built-in association or lifecycle components.
 
 `ObjectTrackFrame` contains the full tracker output at one estimate time. An
 empty frame means the tracker ran and produced no confirmed tracks. Individual

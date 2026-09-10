@@ -2,6 +2,17 @@ use std::error::Error;
 
 use crate::{ObservationId, TimedObservation, TrackId};
 
+/// Whether the current scan could have detected a predicted track.
+///
+/// This is evaluated per track because field of view, range, occlusion, and
+/// detection probability can differ across the same scan. `NotObservable`
+/// lets lifecycle distinguish lack of coverage from an observable miss.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DetectionOpportunity {
+    Observable { detection_probability: f64 },
+    NotObservable,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateDecision {
     Inside,
@@ -48,7 +59,7 @@ pub struct PairHypothesis<S> {
     pub observation: ObservationHypothesis<S>,
 }
 
-pub trait HypothesisModel<S, D, C> {
+pub trait HypothesisModel<S, D, C, B> {
     type Error: Error + Send + Sync + 'static;
 
     fn predict(&self, state: &S, time_ns: i64) -> Result<S, Self::Error>;
@@ -58,8 +69,16 @@ pub trait HypothesisModel<S, D, C> {
         predicted: &S,
         observation: &TimedObservation<D, C>,
     ) -> Result<ObservationHypothesis<S>, Self::Error>;
+
+    fn detection_opportunity(
+        &self,
+        predicted: &S,
+        measurement_time_ns: i64,
+        context: &B,
+    ) -> Result<DetectionOpportunity, Self::Error>;
 }
 
+/// One observation-conditioned state at the reducer's common output time.
 #[derive(Debug, Clone, Copy)]
 pub struct WeightedPosterior<'a, S> {
     pub observation_id: &'a ObservationId,
@@ -67,6 +86,12 @@ pub struct WeightedPosterior<'a, S> {
     pub probability: f64,
 }
 
+/// Reduces observation-conditioned and missed-detection branches to one state.
+///
+/// The manager advances every candidate to `reduction_time_ns` before calling
+/// this API. A probabilistic reducer should include `missed_probability` in
+/// the state and uncertainty update instead of treating a nonempty candidate
+/// list as a certain hit.
 pub trait PosteriorReducer<S> {
     type Error: Error + Send + Sync + 'static;
 
@@ -87,7 +112,7 @@ pub struct SinglePosteriorError;
 
 impl std::fmt::Display for SinglePosteriorError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("hard assignment requires exactly one weight-one posterior")
+        formatter.write_str("hard assignment requires one selected posterior or a complete miss")
     }
 }
 
@@ -103,10 +128,13 @@ impl<S: Clone> PosteriorReducer<S> for SinglePosteriorReducer {
         candidates: &[WeightedPosterior<'_, S>],
         missed_probability: f64,
     ) -> Result<S, Self::Error> {
-        if candidates.len() != 1 || missed_probability != 0.0 || candidates[0].probability != 1.0 {
-            return Err(SinglePosteriorError);
+        match candidates {
+            [] if missed_probability == 1.0 => Ok(_predicted.clone()),
+            [candidate] if missed_probability == 0.0 && candidate.probability == 1.0 => {
+                Ok(candidate.state.clone())
+            }
+            _ => Err(SinglePosteriorError),
         }
-        Ok(candidates[0].state.clone())
     }
 }
 
@@ -151,5 +179,11 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn hard_reducer_keeps_prediction_after_a_miss() {
+        let result = SinglePosteriorReducer.reduce(5, &3, &[], 1.0).unwrap();
+        assert_eq!(result, 3);
     }
 }

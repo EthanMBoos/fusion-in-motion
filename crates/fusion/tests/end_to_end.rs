@@ -332,11 +332,15 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
     let ego_run = estimator::run(&scenario.ego_estimator, &scenario.imu, &ego_measurements)?;
     let estimated = tracker::run(
         &scenario.object_tracker,
+        &scenario.camera,
+        &scenario.lidar,
         &perception,
         &EgoHistory::from_estimates(&ego_run.estimates)?,
     )?;
     let truth = tracker::run(
         &scenario.object_tracker,
+        &scenario.camera,
+        &scenario.lidar,
         &perception,
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
     )?;
@@ -378,6 +382,8 @@ fn both_tracker_controls_use_the_same_detections() -> Result<()> {
         .collect::<Vec<_>>();
     let camera_only = tracker::run(
         &scenario.object_tracker,
+        &scenario.camera,
+        &scenario.lidar,
         &camera_only,
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
     )?;
@@ -398,6 +404,8 @@ fn association_experiment_keeps_two_tracker_owned_ids() -> Result<()> {
     let (_, perception) = split(&generated.measurements);
     let run = tracker::run(
         &scenario.object_tracker,
+        &scenario.camera,
+        &scenario.lidar,
         &perception,
         &EgoHistory::from_truth(&generated.ego_truth_states)?,
     )?;

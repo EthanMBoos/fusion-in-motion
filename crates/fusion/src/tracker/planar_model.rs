@@ -2,14 +2,15 @@ use std::error::Error;
 
 use fusion_schema::messages::{CameraDetection, LidarDetection};
 use fusion_tracking::{
-    GateDecision, HypothesisModel, HypothesisOutcome, ObservationHypothesis, TimedObservation,
+    DetectionOpportunity, GateDecision, HypothesisModel, HypothesisOutcome, ObservationHypothesis,
+    TimedObservation,
 };
 use nalgebra::{SMatrix, SVector, Vector2};
 
 use crate::math;
 
 use super::{
-    input::{Detection, DetectionContext, EgoPose},
+    input::{Detection, DetectionContext, DetectionScanContext, EgoPose},
     planar_state::{
         PlanarTrackFilter, TrackCoordinate, TrackState, TrackStateCovariance, TrackStateVector,
         propagate,
@@ -62,7 +63,9 @@ impl std::fmt::Display for PlanarModelError {
 
 impl Error for PlanarModelError {}
 
-impl HypothesisModel<PlanarTrackFilter, Detection, DetectionContext> for PlanarModel {
+impl HypothesisModel<PlanarTrackFilter, Detection, DetectionContext, DetectionScanContext>
+    for PlanarModel
+{
     type Error = PlanarModelError;
 
     fn predict(
@@ -122,6 +125,30 @@ impl HypothesisModel<PlanarTrackFilter, Detection, DetectionContext> for PlanarM
             log_likelihood: None,
             outcome,
         })
+    }
+
+    fn detection_opportunity(
+        &self,
+        predicted: &PlanarTrackFilter,
+        _measurement_time_ns: i64,
+        context: &DetectionScanContext,
+    ) -> Result<DetectionOpportunity, Self::Error> {
+        let Some(ego_pose) = context.ego_pose else {
+            return Ok(DetectionOpportunity::NotObservable);
+        };
+        let displacement_world_m = predicted.state.position_world_m - ego_pose.position_world_m;
+        let range_m = displacement_world_m.norm();
+        let bearing_body_rad = math::wrap_angle(
+            displacement_world_m.y.atan2(displacement_world_m.x) - ego_pose.yaw_world_from_body_rad,
+        );
+        let inside_field_of_view = bearing_body_rad.abs() <= context.horizontal_fov_rad / 2.0;
+        if range_m <= context.max_range_m && inside_field_of_view {
+            Ok(DetectionOpportunity::Observable {
+                detection_probability: context.detection_probability,
+            })
+        } else {
+            Ok(DetectionOpportunity::NotObservable)
+        }
     }
 }
 

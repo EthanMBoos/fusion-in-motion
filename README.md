@@ -33,6 +33,11 @@ nearest-neighbor assignment and accepts other models and association methods
 through its API. Application state, sensor math, schemas, data, and evaluation
 stay in the application repository.
 
+Trackers that need a different internal state machine implement the whole
+`Tracker` API instead of the reference `TrackManager` pieces. Their internal
+state stays in the application repository while they return labeled or
+unlabeled target reports through the same scan/output boundary.
+
 The checked-in simulator is planar and generates sensor detections rather than
 camera images or lidar point clouds. It provides the complete example for the
 engine: GPS position, IMU acceleration and rotation, camera direction, and

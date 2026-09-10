@@ -47,16 +47,25 @@ pub struct TimedObservation<D, C> {
     pub context: C,
 }
 
+/// Point detections that share one association domain.
+///
+/// `C` describes one observation at its measurement time. `B` describes the
+/// scan as a whole and remains available when `observations` is empty. Put
+/// sensor coverage and detection conditions in `B` so an empty scan can be
+/// distinguished from a sensor that could not see a predicted target.
 #[derive(Debug, Clone)]
-pub struct ObservationBatch<D, C> {
+pub struct ObservationBatch<D, C, B> {
     pub id: BatchId,
     /// Event time used for an empty batch and for the output snapshot.
     pub measurement_time_ns: i64,
     pub arrival_time_ns: i64,
+    pub context: B,
     pub observations: Vec<TimedObservation<D, C>>,
 }
 
-impl<D, C> ObservationBatch<D, C> {
+impl<D, C, B> ObservationBatch<D, C, B> {
+    /// Returns the latest observation time, or the batch measurement time when
+    /// the batch is empty.
     pub fn output_time_ns(&self) -> i64 {
         self.observations
             .iter()
@@ -83,10 +92,11 @@ mod tests {
 
     #[test]
     fn empty_batch_keeps_its_measurement_time() {
-        let batch = ObservationBatch::<(), ()> {
+        let batch = ObservationBatch::<(), (), ()> {
             id: "empty".into(),
             measurement_time_ns: 17,
             arrival_time_ns: 29,
+            context: (),
             observations: Vec::new(),
         };
         assert_eq!(batch.output_time_ns(), 17);

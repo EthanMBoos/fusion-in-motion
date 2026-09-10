@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, error::Error};
 
-use crate::{GateDecision, ObservationId, PairHypothesis, TrackId};
+use crate::{
+    DetectionOpportunity, GateDecision, ObservationBatch, ObservationId, PairHypothesis, TrackId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
@@ -15,20 +17,39 @@ pub struct TrackMarginal {
     pub observation_probabilities: Vec<(ObservationId, f64)>,
 }
 
+/// Association result for one scan.
+///
+/// A hard plan is one-to-one. A marginal plan describes every live track,
+/// gives each track total probability one after including its miss branch, and
+/// cannot assign more than total probability one to any observation. The
+/// manager validates these conditions before changing tracker state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssociationPlan {
     Hard(Vec<Assignment>),
     Marginal(Vec<TrackMarginal>),
 }
 
-pub trait AssociationEngine<S> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackDetectionOpportunity {
+    pub track_id: TrackId,
+    pub opportunity: DetectionOpportunity,
+}
+
+/// Selects or weights the validated track/observation hypotheses for one scan.
+///
+/// The typed batch and per-track detection opportunities are supplied in
+/// addition to pair hypotheses because clutter, coverage, and detection
+/// probability are scan-level inputs rather than pair-update outputs.
+pub trait AssociationEngine<S, D, C, B> {
     type Error: Error + Send + Sync + 'static;
 
     fn associate(
         &self,
+        batch: &ObservationBatch<D, C, B>,
         track_ids: &[TrackId],
         observation_ids: &[ObservationId],
         hypotheses: &[PairHypothesis<S>],
+        detection_opportunities: &[TrackDetectionOpportunity],
     ) -> Result<AssociationPlan, Self::Error>;
 }
 
@@ -89,14 +110,16 @@ impl std::fmt::Display for MinimumCostAssignmentError {
 
 impl Error for MinimumCostAssignmentError {}
 
-impl<S> AssociationEngine<S> for GlobalNearestNeighbor {
+impl<S, D, C, B> AssociationEngine<S, D, C, B> for GlobalNearestNeighbor {
     type Error = AssociationError;
 
     fn associate(
         &self,
+        _batch: &ObservationBatch<D, C, B>,
         track_ids: &[TrackId],
         observation_ids: &[ObservationId],
         hypotheses: &[PairHypothesis<S>],
+        _detection_opportunities: &[TrackDetectionOpportunity],
     ) -> Result<AssociationPlan, Self::Error> {
         if !self.missed_assignment_cost.is_finite() || self.missed_assignment_cost <= 0.0 {
             return Err(AssociationError::InvalidMissedAssignmentCost);
@@ -262,6 +285,28 @@ mod tests {
         }
     }
 
+    fn batch() -> ObservationBatch<(), (), ()> {
+        ObservationBatch {
+            id: "batch".into(),
+            measurement_time_ns: 0,
+            arrival_time_ns: 0,
+            context: (),
+            observations: Vec::new(),
+        }
+    }
+
+    fn opportunities(track_ids: &[TrackId]) -> Vec<TrackDetectionOpportunity> {
+        track_ids
+            .iter()
+            .map(|track_id| TrackDetectionOpportunity {
+                track_id: track_id.clone(),
+                opportunity: DetectionOpportunity::Observable {
+                    detection_probability: 1.0,
+                },
+            })
+            .collect()
+    }
+
     #[test]
     fn assignment_is_globally_optimal() {
         let costs = vec![vec![1.0, 2.0, 9.0], vec![1.1, 100.0, 9.0]];
@@ -281,7 +326,13 @@ mod tests {
         let plan = GlobalNearestNeighbor {
             missed_assignment_cost: 9.0,
         }
-        .associate(&tracks, &observations, &hypotheses)
+        .associate(
+            &batch(),
+            &tracks,
+            &observations,
+            &hypotheses,
+            &opportunities(&tracks),
+        )
         .unwrap();
         let AssociationPlan::Hard(assignments) = plan else {
             unreachable!()
@@ -300,7 +351,13 @@ mod tests {
         let plan = GlobalNearestNeighbor {
             missed_assignment_cost: 9.0,
         }
-        .associate(&tracks, &observations, &[candidate])
+        .associate(
+            &batch(),
+            &tracks,
+            &observations,
+            &[candidate],
+            &opportunities(&tracks),
+        )
         .unwrap();
         assert_eq!(plan, AssociationPlan::Hard(Vec::new()));
     }
@@ -338,7 +395,13 @@ mod tests {
         let plan = GlobalNearestNeighbor {
             missed_assignment_cost: f64::MAX,
         }
-        .associate(&tracks, &observations, &candidates)
+        .associate(
+            &batch(),
+            &tracks,
+            &observations,
+            &candidates,
+            &opportunities(&tracks),
+        )
         .unwrap();
         assert_eq!(plan, AssociationPlan::Hard(Vec::new()));
     }

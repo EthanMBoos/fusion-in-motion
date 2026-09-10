@@ -5,6 +5,7 @@ pub enum LifecycleEventKind {
     Created,
     Confirmed,
     Missed,
+    Coasted,
     Deleted,
 }
 
@@ -25,6 +26,7 @@ pub struct BatchDiagnostics {
     pub invalid_candidate_pairs: usize,
     pub selected_associations: usize,
     pub missed_updates: usize,
+    pub coasted_updates: usize,
     pub created_tracks: usize,
     pub confirmed_tracks: usize,
     pub deleted_tracks: usize,
