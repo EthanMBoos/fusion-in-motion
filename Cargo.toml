@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/fusion", "crates/fusion-schema"]
+members = ["crates/fusion", "crates/fusion-schema", "crates/fusion-tracking"]
 exclude = ["crates/fusion-gtsam"]
 resolver = "2"
 

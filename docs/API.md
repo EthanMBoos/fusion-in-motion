@@ -1,5 +1,9 @@
 # Simulator API
 
+This page describes the planar simulator API. `fusion-tracking` contains the
+tracking loop and has no serialization dependency. See
+[`TRACKING_ENGINE.md`](TRACKING_ENGINE.md) to use it from another repository.
+
 The messages in `proto/fusion.proto` match the planar simulator:
 
 ```text

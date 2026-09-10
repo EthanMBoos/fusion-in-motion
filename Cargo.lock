@@ -1342,6 +1342,7 @@ dependencies = [
  "clap",
  "fusion-gtsam",
  "fusion-schema",
+ "fusion-tracking",
  "mcap",
  "nalgebra",
  "prost",
@@ -1360,6 +1361,10 @@ dependencies = [
  "prost",
  "prost-build",
 ]
+
+[[package]]
+name = "fusion-tracking"
+version = "0.1.0"
 
 [[package]]
 name = "futures"

@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 fusion-schema = { path = "../fusion-schema" }
+fusion-tracking = { path = "../fusion-tracking" }
 mcap.workspace = true
 nalgebra.workspace = true
 prost.workspace = true

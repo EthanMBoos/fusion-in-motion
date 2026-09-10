@@ -1,7 +1,7 @@
 # Demo plan
 
-[`EXPERIMENTS.md`](EXPERIMENTS.md) lists what runs today. This is the intended
-order as more demos are added. **Ready now** means YAML and dashboard work.
+[`EXPERIMENTS.md`](EXPERIMENTS.md) lists what runs today. Add new demos in the
+order below. **Ready now** means YAML and dashboard work.
 **Core work** means Rust changes.
 
 Reviewed: Stone Soup 1.9.1
@@ -68,8 +68,7 @@ unmatched detections from starting tracks with an explicit initiation setting.
 Compare a loose and tight gate.
 
 Use the tracker history to inspect each candidate's NIS, gate result, selected
-detection, rejected updates, and missed updates. `rejected_updates` does not
-include pairs removed during assignment gating.
+detection, correction, and missed-track event.
 
 Reference: [Stone Soup single-target clutter tutorial](https://stonesoup.readthedocs.io/en/stable/auto_tutorials/05_DataAssociation-Clutter.html).
 
@@ -160,18 +159,17 @@ and [CLEAR MOT](https://github.com/dstl/Stone-Soup/blob/main/stonesoup/metricgen
   smoothed error. The final states should match. The smoother uses future
   measurements. [Kalman smoother](https://github.com/dstl/Stone-Soup/blob/main/stonesoup/smoother/kalman.py)
 
-## 3D and recorded data — core work
+## Recorded data and downstream applications — core work
 
-The build steps are in [`ROADMAP.md`](ROADMAP.md). Stone Soup references:
+The build steps are in [`ROADMAP.md`](ROADMAP.md). Put large custom scenarios,
+sensor configurations, and their models in a separate repository that depends
+on `fusion-tracking`.
 
-- [3D multi-target example](https://stonesoup.readthedocs.io/en/stable/auto_examples/simulation/MTT_3D_Platform.html):
-  reuse the scenario structure, but score x, y, and z. Its displayed SIAP
-  measures omit z.
-- [Video-processing demo](https://stonesoup.readthedocs.io/en/stable/auto_demos/Video_Processing.html):
-  use the reader, detector, and tracker boundary. Record the sequence, frame
-  range, truth source, coordinate and timestamp conversions, adapter version,
-  and input checksum. Keep fixed-detection results separate from full
-  detector-to-track results.
+For recorded input, use the reader/detector/tracker boundary shown by Stone
+Soup's [video-processing demo](https://stonesoup.readthedocs.io/en/stable/auto_demos/Video_Processing.html).
+Record the sequence, frame range, truth source, coordinate and timestamp
+conversions, adapter version, and input checksum. Keep fixed-detection results
+separate from full detector-to-track results.
 
 ## Hold for later
 
@@ -193,5 +191,6 @@ Stone Soup's plotting code are outside this plan.
 
 ### Later core work
 
-- [ ] Initialize range from several camera bearings and known camera motion.
 - [ ] Add causal fixed-history rewind and replay for delayed measurements.
+- [ ] Add a minimal external-crate example that uses caller-owned observation,
+  context, and state types.

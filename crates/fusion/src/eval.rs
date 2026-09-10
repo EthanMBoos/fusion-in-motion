@@ -406,7 +406,8 @@ pub(crate) fn frame_truth_assignments(
         costs.push(row);
     }
 
-    math::minimum_cost_assignment(&costs)
+    fusion_tracking::minimum_cost_assignment(&costs)
+        .expect("truth-assignment cost matrix is rectangular and finite")
         .into_iter()
         .enumerate()
         .filter(|(track_index, truth_index)| {

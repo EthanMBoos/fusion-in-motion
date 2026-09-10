@@ -22,8 +22,9 @@ The practical choices are:
 - use [Autoware's multi-object tracker](https://github.com/autowarefoundation/autoware_universe/tree/main/perception/autoware_multi_object_tracker)
   later for detections expressed as Autoware 3D objects.
 
-Do not start by adding a universal tracker plugin API. Run one direct comparison
-at each measurement boundary.
+[`TRACKING_ENGINE.md`](TRACKING_ENGINE.md) describes the engine interfaces.
+Models and association methods can live in another repository. Different
+measurement types still require separate comparisons.
 
 Reviewed September 2026.
 
@@ -78,7 +79,7 @@ Lifecycle and association diagnostics can stay in backend-specific files.
 | [Official ByteTrack](https://github.com/FoundationVision/ByteTrack) | Image boxes and confidence | Python with deployment C++ / MIT | Author implementation and benchmark reference; large as a dependency | Check ByteTrack-cpp parity and cite results |
 | [OC-SORT](https://github.com/noahcao/OC_SORT) | Image boxes and confidence | Python with contributed C++ / MIT | Good second motion-only video tracker | Run official Python first; audit a C++ port later |
 | [Smorodov Multitarget-tracker](https://github.com/Smorodov/Multitarget-tracker) | Image points or boxes | C++ / Apache-2.0 | Mature embeddable library with many choices | Broader C++ camera-tracker comparisons |
-| [Norfair](https://github.com/tryolabs/norfair) | Arbitrary image points and a custom distance | Python / BSD-3-Clause | Flexible and approachable; not covariance-driven sensor fusion | Camera and drone experiments |
+| [Norfair](https://github.com/tryolabs/norfair) | Arbitrary image points and a custom distance | Python / BSD-3-Clause | Flexible and approachable; not covariance-driven sensor fusion | Image-point tracking experiments |
 | [BoxMOT](https://github.com/mikel-brostrom/boxmot) | Image boxes, frames, and optional appearance features | Python and C++ / AGPL-3.0 | Strong multi-algorithm harness; license is a poor fit for the MIT core | Separate benchmark tool |
 | [NVIDIA DeepStream tracker](https://docs.nvidia.com/metropolis/deepstream/9.0/text/DS_plugin_gst-nvtracker.html) | Batched video boxes and sometimes image buffers | Proprietary C/C++ SDK and NVIDIA runtime | Real industry implementation; tied to NVIDIA and GStreamer | External recorded-video comparison |
 | [CenterPoint](https://github.com/tianweiy/CenterPoint) | Detected 3D boxes | Python/CUDA / MIT | Useful public 3D detector and simple tracker | Later dataset benchmark, not a linked tracker |
@@ -254,7 +255,7 @@ C++ dependency should expose several camera trackers. That breadth also makes
 it less clear as a single reference result.
 
 [Norfair](https://github.com/tryolabs/norfair) accepts arbitrary image point
-sets and custom distance functions. It is useful for quick camera or drone
+sets and custom distance functions. It is useful for quick image-point tracking
 experiments, but it does not preserve the covariance-aware nonlinear sensor
 model used by the current tracker.
 
@@ -410,9 +411,8 @@ For image tracks, use [TrackEval](https://github.com/JonathonLuiten/TrackEval).
 It is the official evaluation code for MOTChallenge and KITTI 2D Tracking and
 reports HOTA, CLEAR MOT, and identity metrics. Export MOTChallenge-format truth
 and tracks rather than adapting meter-based scoring to boxes. Map every frame
-to a deterministic integer and disable MOTChallenge preprocessing unless the
-experiment intentionally supplies its class, distractor, and ignore-region
-rules.
+to a deterministic integer. Disable MOTChallenge preprocessing unless the
+experiment supplies class, distractor, and ignore-region rules.
 
 ## Recommended order
 

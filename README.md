@@ -1,26 +1,46 @@
 # Fusion in Motion
 
-Fusion in Motion is a simulator for building and inspecting state-estimation
-and tracking experiments. The current planar starter models two connected
-systems:
+Fusion in Motion is a Rust workbench for sensor fusion and target tracking. It
+is both:
+
+- a runnable reference repo for simulation, estimation, tracking, evaluation,
+  and visualization; and
+- a reusable target-tracking engine for applications kept in other
+  repositories.
+
+The reference system connects two estimation problems:
 
 ```text
 GPS + IMU -> vehicle state
 camera + lidar + vehicle state -> object tracks
 ```
 
-GPS and IMU measurements feed the vehicle estimator. Camera and lidar
-detections feed the object tracker, which also uses the estimated vehicle state.
+GPS and IMU estimate the moving vehicle. Camera and lidar detections, combined
+with that vehicle estimate, produce object tracks. A second tracker uses the
+true vehicle pose as a control, so the dashboard shows how vehicle error moves
+the object tracks.
 
-A scenario defines vehicle and object motion over time. The simulator calculates
-what each sensor would report, then adds configured noise, bias, missed
-detections, and delay. It produces measurements, not camera images or lidar
-point clouds.
+A YAML scenario defines motion, sensors, noise, bias, missed detections, delay,
+filters, association, and track lifecycle. Each run writes the measurements,
+truth, estimates, tracks, metrics, tracker history, and a Rerun dashboard. The
+checked-in experiments change one effect at a time and keep numerical
+baselines.
 
-The current simulator is planar. Vehicle motion follows acceleration and turn
-rate segments, while objects move at configured velocities. GPS reports vehicle
-position, the IMU reports forward acceleration and rotation, the camera reports
-direction to an object, and lidar reports direction and distance.
+`fusion-tracking` is the reusable part. It runs measurement-time prediction,
+hypothesis generation, association, posterior updates, initiation,
+confirmation, coasting, deletion, and diagnostics. It includes gated global
+nearest-neighbor assignment and accepts other models and association methods
+through its API. Application state, sensor math, schemas, data, and evaluation
+stay in the application repository.
+
+The checked-in simulator is planar and generates sensor detections rather than
+camera images or lidar point clouds. It provides the complete example for the
+engine: GPS position, IMU acceleration and rotation, camera direction, and
+lidar range and direction.
+
+Run the reference experiments to study the full system. Use
+[`fusion-tracking`](docs/TRACKING_ENGINE.md) from another repository to build a
+different tracker.
 
 ## Run it
 

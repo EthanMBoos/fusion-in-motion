@@ -1,80 +1,30 @@
+mod input;
+mod planar_initiator;
+mod planar_model;
+mod planar_state;
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Result, ensure};
-use fusion_schema::messages::{
-    CameraDetection, CameraFrame, EgoStateEstimate, EgoTruthState, LidarDetection, LidarScan,
-    MeasurementTime, ObjectTrack, ObjectTrackFrame, Vec2,
+use anyhow::Result;
+use fusion_schema::messages::{ObjectTrack, ObjectTrackFrame, Vec2};
+use fusion_tracking::{
+    AssociationPlan, BatchResult, GateDecision, GlobalNearestNeighbor, HitCountLifecycle,
+    ObservationBatch, SinglePosteriorReducer, TimedObservation, TrackManager,
 };
-use nalgebra::{SMatrix, SVector, Vector2};
 use serde::{Deserialize, Serialize};
 
-use crate::{math, scenario::ObjectTrackerConfig};
+pub use input::{EgoHistory, EgoSource, PerceptionMeasurement};
 
-type TrackVector = SVector<f64, 4>;
-type TrackCovariance = SMatrix<f64, 4, 4>;
-type LidarJacobian = SMatrix<f64, 2, 4>;
-type LidarCovariance = SMatrix<f64, 2, 2>;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct TrackState {
-    position_world_m: Vector2<f64>,
-    velocity_world_mps: Vector2<f64>,
-}
-
-impl TrackState {
-    fn new(position_world_m: Vector2<f64>, velocity_world_mps: Vector2<f64>) -> Self {
-        Self {
-            position_world_m,
-            velocity_world_mps,
-        }
-    }
-
-    fn with_correction(mut self, correction: TrackVector) -> Self {
-        self.position_world_m.x += correction[TrackCoordinate::PositionX.index()];
-        self.position_world_m.y += correction[TrackCoordinate::PositionY.index()];
-        self.velocity_world_mps.x += correction[TrackCoordinate::VelocityX.index()];
-        self.velocity_world_mps.y += correction[TrackCoordinate::VelocityY.index()];
-        self
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(usize)]
-enum TrackCoordinate {
-    PositionX,
-    PositionY,
-    VelocityX,
-    VelocityY,
-}
-
-impl TrackCoordinate {
-    const fn index(self) -> usize {
-        self as usize
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum PerceptionMeasurement {
-    Camera(CameraFrame),
-    Lidar(LidarScan),
-}
-
-impl PerceptionMeasurement {
-    pub fn time(&self) -> &MeasurementTime {
-        match self {
-            Self::Camera(value) => value.time.as_ref(),
-            Self::Lidar(value) => value.time.as_ref(),
-        }
-        .expect("generated perception measurements have time")
-    }
-}
+use crate::scenario::ObjectTrackerConfig;
+use input::{Detection, DetectionBatch, DetectionContext};
+use planar_initiator::PlanarInitiator;
+use planar_model::PlanarModel;
+use planar_state::{PlanarTrackFilter, snapshot};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackerDiagnostics {
     pub received_detections: usize,
     pub applied_updates: usize,
-    pub rejected_updates: usize,
-    pub invalid_updates: usize,
     pub waiting_for_range: usize,
     pub missing_ego_pose: usize,
     pub delayed_detections: usize,
@@ -100,125 +50,6 @@ pub struct TrackerRun {
     pub diagnostics: TrackerDiagnostics,
     pub processed_detections: Vec<String>,
     pub(crate) history: TrackerHistory,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EgoSource {
-    Estimated,
-    Truth,
-}
-
-impl EgoSource {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Estimated => "estimated",
-            Self::Truth => "truth",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EgoPose {
-    time_ns: i64,
-    position: Vector2<f64>,
-    yaw: f64,
-    covariance_xy_yaw: SMatrix<f64, 3, 3>,
-}
-
-#[derive(Debug)]
-pub struct EgoHistory {
-    samples: Vec<EgoPose>,
-}
-
-impl EgoHistory {
-    pub fn from_estimates(estimates: &[EgoStateEstimate]) -> Result<Self> {
-        let mut samples = Vec::with_capacity(estimates.len());
-        for estimate in estimates {
-            let pose = estimate
-                .pose_world
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("ego estimate has no pose"))?;
-            let position = pose
-                .position
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("ego estimate pose has no position"))?;
-            ensure!(
-                matches!(estimate.state_covariance.len(), 16 | 36),
-                "planar ego covariance must contain 16 or 36 values"
-            );
-            let dimension = if estimate.state_covariance.len() == 36 {
-                6
-            } else {
-                4
-            };
-            let indices = [0, 1, 2];
-            let covariance_xy_yaw = SMatrix::from_fn(|row, column| {
-                estimate.state_covariance[indices[row] * dimension + indices[column]]
-            });
-            samples.push(EgoPose {
-                time_ns: estimate.estimate_time_ns,
-                position: Vector2::new(position.x, position.y),
-                yaw: pose.yaw_rad,
-                covariance_xy_yaw,
-            });
-        }
-        Ok(Self { samples })
-    }
-
-    pub fn from_truth(truth: &[EgoTruthState]) -> Result<Self> {
-        let mut samples = Vec::with_capacity(truth.len());
-        for state in truth {
-            let pose = state
-                .pose_world
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("ego truth has no pose"))?;
-            let position = pose
-                .position
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("ego truth pose has no position"))?;
-            samples.push(EgoPose {
-                time_ns: state.time_ns,
-                position: Vector2::new(position.x, position.y),
-                yaw: pose.yaw_rad,
-                covariance_xy_yaw: SMatrix::zeros(),
-            });
-        }
-        Ok(Self { samples })
-    }
-
-    fn sample(&self, time_ns: i64) -> Option<EgoPose> {
-        let index = self
-            .samples
-            .partition_point(|sample| sample.time_ns < time_ns);
-        match (index.checked_sub(1), self.samples.get(index)) {
-            (None, next) => next.copied(),
-            (Some(previous), None) => self.samples.get(previous).copied(),
-            (Some(previous), Some(next)) => {
-                let previous = self.samples[previous];
-                if next.time_ns == previous.time_ns {
-                    return Some(previous);
-                }
-                let fraction = ((time_ns - previous.time_ns) as f64
-                    / (next.time_ns - previous.time_ns) as f64)
-                    .clamp(0.0, 1.0);
-                Some(EgoPose {
-                    time_ns,
-                    position: previous.position + (next.position - previous.position) * fraction,
-                    yaw: math::wrap_angle(
-                        previous.yaw + math::wrap_angle(next.yaw - previous.yaw) * fraction,
-                    ),
-                    covariance_xy_yaw: previous.covariance_xy_yaw
-                        + (next.covariance_xy_yaw - previous.covariance_xy_yaw) * fraction,
-                })
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum Detection {
-    Camera(CameraDetection),
-    Lidar(LidarDetection),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,14 +89,6 @@ pub(crate) enum GateResult {
     Invalid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum UpdateResult {
-    Applied,
-    Rejected,
-    Invalid,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AssociationRecord {
     pub batch_id: String,
@@ -279,7 +102,6 @@ pub(crate) struct AssociationRecord {
     pub gate_threshold_squared: f64,
     pub gate_result: GateResult,
     pub selected: bool,
-    pub update_result: Option<UpdateResult>,
     pub corrected: Option<TrackSnapshot>,
 }
 
@@ -309,279 +131,51 @@ pub(crate) struct TrackerHistory {
     pub lifecycle: Vec<LifecycleRecord>,
 }
 
-#[derive(Debug, Clone)]
-struct DetectionBatch {
-    sensor: SensorKind,
-    measurement_time_ns: i64,
-    arrival_time_ns: i64,
-    stable_id: String,
-    detections: Vec<Detection>,
-}
-
-impl DetectionBatch {
-    fn detection_time_ns(&self, detection: &Detection) -> i64 {
-        match detection {
-            Detection::Camera(_) => self.measurement_time_ns,
-            Detection::Lidar(value) => value.measurement_time_ns,
-        }
-    }
-
-    fn output_time_ns(&self) -> i64 {
-        self.detections
-            .iter()
-            .map(|detection| self.detection_time_ns(detection))
-            .max()
-            .unwrap_or(self.measurement_time_ns)
-    }
-}
-
-#[derive(Clone)]
-struct Filter {
-    state: TrackState,
-    covariance: TrackCovariance,
-    time_ns: i64,
-}
-
-struct ManagedTrack {
-    filter: Filter,
-    hits: usize,
-    last_update_time_ns: i64,
-    confirmed: bool,
-}
-
 pub fn run(
     config: &ObjectTrackerConfig,
     measurements: &[PerceptionMeasurement],
     ego_history: &EgoHistory,
 ) -> Result<TrackerRun> {
-    validate_delivery_order(measurements)?;
+    input::validate_delivery_order(measurements)?;
     let mut diagnostics = TrackerDiagnostics::default();
-    let mut batches = flatten(measurements);
+    let mut batches = input::flatten(measurements)?;
     diagnostics.received_detections = batches.iter().map(|batch| batch.detections.len()).sum();
-    prepare_timing(config, &mut batches, &mut diagnostics);
+    input::prepare_timing(config, &mut batches, &mut diagnostics);
 
-    let mut filters = BTreeMap::<String, ManagedTrack>::new();
-    let mut next_track_number = 1_u64;
+    let model = PlanarModel {
+        gate_sigma: config.gate_sigma,
+        acceleration_noise_stddev_mps2: config.acceleration_noise_stddev_mps2,
+    };
+    let mut manager = TrackManager::new(
+        model,
+        GlobalNearestNeighbor {
+            missed_assignment_cost: config.gate_sigma.powi(2) + 1.0,
+        },
+        SinglePosteriorReducer,
+        PlanarInitiator,
+        HitCountLifecycle {
+            confirmation_hits: config.confirmation_hits,
+            max_time_without_update_ns: (config.max_time_without_update_s * 1.0e9).round() as i64,
+        },
+    );
     let mut frames = Vec::new();
     let mut processed_detections = Vec::new();
     let mut history = TrackerHistory::default();
-    let max_time_without_update_ns = (config.max_time_without_update_s * 1.0e9).round() as i64;
 
     for batch in batches {
-        let egos = batch
-            .detections
-            .iter()
-            .map(|detection| ego_history.sample(batch.detection_time_ns(detection)))
-            .collect::<Vec<_>>();
-        diagnostics.missing_ego_pose += egos.iter().filter(|ego| ego.is_none()).count();
-
-        let track_ids = filters.keys().cloned().collect::<Vec<_>>();
-        let mut association = associate(
-            &track_ids,
-            &filters,
-            &batch,
-            &egos,
-            config.gate_sigma,
-            config.acceleration_noise_stddev_mps2,
-        );
-        diagnostics.candidate_pairs += association.records.len();
-        diagnostics.gated_out_pairs += association
-            .records
-            .iter()
-            .filter(|record| record.gate_result == GateResult::Outside)
-            .count();
-        diagnostics.invalid_candidate_pairs += association
-            .records
-            .iter()
-            .filter(|record| record.gate_result == GateResult::Invalid)
-            .count();
-        diagnostics.selected_associations += association.matches.len();
-
-        let selected_detections = association
-            .matches
-            .iter()
-            .map(|(_, detection_index)| *detection_index)
-            .collect::<BTreeSet<_>>();
-        let mut updated_tracks = BTreeSet::new();
-
-        for &(track_index, detection_index) in &association.matches {
-            let track_id = &track_ids[track_index];
-            let detection = &batch.detections[detection_index];
-            let ego = egos[detection_index].expect("association requires ego pose");
-            let detection_time_ns = batch.detection_time_ns(detection);
-            let track = filters.get_mut(track_id).expect("associated track exists");
-            propagate(
-                &mut track.filter,
-                detection_time_ns,
-                config.acceleration_noise_stddev_mps2,
-            )?;
-            let result = match detection {
-                Detection::Camera(value) => {
-                    update_camera(&mut track.filter, value, ego, config.gate_sigma)
-                }
-                Detection::Lidar(value) => {
-                    update_lidar(&mut track.filter, value, ego, config.gate_sigma)
-                }
-            };
-            let record = association
-                .records
-                .iter_mut()
-                .find(|record| {
-                    record.track_id == *track_id && record.detection_index == detection_index
-                })
-                .expect("selected association was recorded");
-            match result {
-                UpdateResult::Applied => {
-                    record.update_result = Some(UpdateResult::Applied);
-                    record.corrected = Some(snapshot(&track.filter));
-                    diagnostics.applied_updates += 1;
-                    match detection {
-                        Detection::Camera(_) => {
-                            diagnostics.associated_camera_detections += 1;
-                        }
-                        Detection::Lidar(_) => {
-                            diagnostics.associated_lidar_detections += 1;
-                        }
-                    }
-                    track.last_update_time_ns = detection_time_ns;
-                    track.hits += 1;
-                    updated_tracks.insert(track_id.clone());
-                    if !track.confirmed && track.hits >= config.confirmation_hits {
-                        track.confirmed = true;
-                        diagnostics.confirmed_tracks += 1;
-                        history.lifecycle.push(lifecycle_record(
-                            &batch,
-                            track_id,
-                            LifecycleEventKind::Confirmed,
-                            None,
-                            &track.filter,
-                        ));
-                    }
-                }
-                UpdateResult::Rejected => {
-                    record.update_result = Some(UpdateResult::Rejected);
-                    diagnostics.rejected_updates += 1;
-                }
-                UpdateResult::Invalid => {
-                    record.update_result = Some(UpdateResult::Invalid);
-                    diagnostics.invalid_updates += 1;
-                }
-            }
-        }
-
-        let output_time_ns = batch.output_time_ns();
-        for track_id in &track_ids {
-            if !updated_tracks.contains(track_id) {
-                let track = filters.get(track_id).expect("existing track");
-                let mut predicted = track.filter.clone();
-                propagate(
-                    &mut predicted,
-                    output_time_ns,
-                    config.acceleration_noise_stddev_mps2,
-                )?;
-                history.lifecycle.push(lifecycle_record(
-                    &batch,
-                    track_id,
-                    LifecycleEventKind::Missed,
-                    None,
-                    &predicted,
-                ));
-                diagnostics.missed_updates += 1;
-            }
-        }
-
-        for (detection_index, detection) in batch.detections.iter().enumerate() {
-            if selected_detections.contains(&detection_index) || egos[detection_index].is_none() {
-                continue;
-            }
-            match detection {
-                Detection::Camera(_) => {
-                    diagnostics.unmatched_camera_detections += 1;
-                    diagnostics.waiting_for_range += 1;
-                }
-                Detection::Lidar(value) => {
-                    diagnostics.unmatched_lidar_detections += 1;
-                    let track_id = format!("track-{next_track_number:03}");
-                    next_track_number += 1;
-                    let confirmed = config.confirmation_hits == 1;
-                    filters.insert(
-                        track_id.clone(),
-                        ManagedTrack {
-                            filter: initialize(
-                                value,
-                                egos[detection_index].expect("checked ego pose"),
-                                batch.detection_time_ns(detection),
-                            ),
-                            hits: 1,
-                            last_update_time_ns: batch.detection_time_ns(detection),
-                            confirmed,
-                        },
-                    );
-                    let track = filters.get(&track_id).expect("created track");
-                    history.lifecycle.push(lifecycle_record(
-                        &batch,
-                        &track_id,
-                        LifecycleEventKind::Created,
-                        Some(detection),
-                        &track.filter,
-                    ));
-                    diagnostics.created_tracks += 1;
-                    diagnostics.applied_updates += 1;
-                    if confirmed {
-                        diagnostics.confirmed_tracks += 1;
-                        history.lifecycle.push(lifecycle_record(
-                            &batch,
-                            &track_id,
-                            LifecycleEventKind::Confirmed,
-                            None,
-                            &track.filter,
-                        ));
-                    }
-                }
-            }
-        }
-
-        let stale_tracks = filters
-            .iter()
-            .filter(|(_, track)| {
-                output_time_ns.saturating_sub(track.last_update_time_ns)
-                    >= max_time_without_update_ns
-            })
-            .map(|(track_id, _)| track_id.clone())
-            .collect::<Vec<_>>();
-        for track_id in stale_tracks {
-            let mut track = filters.remove(&track_id).expect("stale track exists");
-            propagate(
-                &mut track.filter,
-                output_time_ns,
-                config.acceleration_noise_stddev_mps2,
-            )?;
-            history.lifecycle.push(lifecycle_record(
-                &batch,
-                &track_id,
-                LifecycleEventKind::Deleted,
-                None,
-                &track.filter,
-            ));
-            diagnostics.deleted_tracks += 1;
-        }
-
-        let mut output_tracks = Vec::new();
-        for (track_id, track) in filters.iter().filter(|(_, track)| track.confirmed) {
-            let mut predicted = track.filter.clone();
-            propagate(
-                &mut predicted,
-                output_time_ns,
-                config.acceleration_noise_stddev_mps2,
-            )?;
-            output_tracks.push(to_track(&predicted, track_id));
-        }
+        let core_batch = to_core_batch(&batch, ego_history, &mut diagnostics);
+        let result = manager.process_batch(&core_batch)?;
+        collect_diagnostics(&core_batch, &result, &mut diagnostics);
+        collect_history(&batch, &core_batch, &result, config, &mut history);
         frames.push(ObjectTrackFrame {
-            estimate_time_ns: output_time_ns,
-            available_time_ns: batch.arrival_time_ns,
-            tracks: output_tracks,
+            estimate_time_ns: result.measurement_time_ns,
+            available_time_ns: result.arrival_time_ns,
+            tracks: result
+                .tracks
+                .iter()
+                .map(|track| to_track(&track.state, track.id.as_str()))
+                .collect(),
         });
-
         processed_detections.extend(
             batch
                 .detections
@@ -589,7 +183,6 @@ pub fn run(
                 .enumerate()
                 .map(|(index, _)| format!("{}:{index}", batch.stable_id)),
         );
-        history.associations.extend(association.records);
     }
 
     Ok(TrackerRun {
@@ -600,219 +193,172 @@ pub fn run(
     })
 }
 
-fn lifecycle_record(
+fn to_core_batch(
     batch: &DetectionBatch,
-    track_id: &str,
-    event: LifecycleEventKind,
-    detection: Option<&Detection>,
-    filter: &Filter,
-) -> LifecycleRecord {
-    LifecycleRecord {
-        measurement_time_ns: filter.time_ns,
-        arrival_time_ns: batch.arrival_time_ns,
-        sensor: batch.sensor,
-        track_id: track_id.to_owned(),
-        event,
-        detection: detection.map(detection_record),
-        state: snapshot(filter),
-    }
-}
-
-fn prepare_timing(
-    config: &ObjectTrackerConfig,
-    batches: &mut Vec<DetectionBatch>,
+    ego_history: &EgoHistory,
     diagnostics: &mut TrackerDiagnostics,
-) {
-    if config.timing_compensation {
-        let mut latest_measurement_time = None;
-        batches.retain(|batch| {
-            let age = latest_measurement_time
-                .map(|time: i64| time.saturating_sub(batch.measurement_time_ns))
-                .unwrap_or(0);
-            let count = batch.detections.len();
-            if age > 0 {
-                diagnostics.delayed_detections += count;
-            }
-            latest_measurement_time = Some(
-                latest_measurement_time.map_or(batch.measurement_time_ns, |time: i64| {
-                    time.max(batch.measurement_time_ns)
-                }),
-            );
-            if age > config.history_duration_ns {
-                diagnostics.discarded_detections += count;
-                false
-            } else {
-                if age > 0 {
-                    diagnostics.replayed_detections += count;
-                }
-                true
-            }
-        });
-        batches.sort_by(|left, right| {
-            (
-                left.measurement_time_ns,
-                left.arrival_time_ns,
-                &left.stable_id,
-            )
-                .cmp(&(
-                    right.measurement_time_ns,
-                    right.arrival_time_ns,
-                    &right.stable_id,
-                ))
-        });
-    } else {
-        for batch in batches {
-            batch.measurement_time_ns = batch.arrival_time_ns;
-            for detection in &mut batch.detections {
-                if let Detection::Lidar(value) = detection {
-                    value.measurement_time_ns = batch.arrival_time_ns;
-                }
-            }
-        }
-    }
-}
-
-fn flatten(measurements: &[PerceptionMeasurement]) -> Vec<DetectionBatch> {
-    measurements
+) -> ObservationBatch<Detection, DetectionContext> {
+    let observations = batch
+        .detections
         .iter()
         .enumerate()
-        .map(|(record_index, measurement)| {
-            let time = measurement.time();
-            match measurement {
-                PerceptionMeasurement::Camera(frame) => DetectionBatch {
-                    sensor: SensorKind::Camera,
-                    measurement_time_ns: time.measurement_time_ns,
-                    arrival_time_ns: time.arrival_time_ns,
-                    stable_id: format!("camera:{record_index}"),
-                    detections: frame
-                        .detections
-                        .iter()
-                        .cloned()
-                        .map(Detection::Camera)
-                        .collect(),
-                },
-                PerceptionMeasurement::Lidar(scan) => DetectionBatch {
-                    sensor: SensorKind::Lidar,
-                    measurement_time_ns: scan
-                        .detections
-                        .iter()
-                        .map(|detection| detection.measurement_time_ns)
-                        .min()
-                        .unwrap_or(time.measurement_time_ns),
-                    arrival_time_ns: time.arrival_time_ns,
-                    stable_id: format!("lidar:{record_index}"),
-                    detections: scan
-                        .detections
-                        .iter()
-                        .cloned()
-                        .map(Detection::Lidar)
-                        .collect(),
-                },
+        .map(|(index, detection)| {
+            let measurement_time_ns = batch.detection_time_ns(detection);
+            let ego_pose = ego_history.sample(measurement_time_ns);
+            if ego_pose.is_none() {
+                diagnostics.missing_ego_pose += 1;
+            }
+            TimedObservation {
+                id: format!("{}:{index}", batch.stable_id).into(),
+                measurement_time_ns,
+                payload: detection.clone(),
+                context: DetectionContext { ego_pose },
             }
         })
-        .collect()
-}
-
-fn validate_delivery_order(measurements: &[PerceptionMeasurement]) -> Result<()> {
-    let mut previous = None;
-    for measurement in measurements {
-        let delivery = measurement.time().arrival_time_ns;
-        if let Some(previous) = previous {
-            ensure!(
-                delivery >= previous,
-                "perception measurements are not in arrival order"
-            );
-        }
-        previous = Some(delivery);
+        .collect();
+    ObservationBatch {
+        id: batch.stable_id.clone().into(),
+        measurement_time_ns: batch.measurement_time_ns,
+        arrival_time_ns: batch.arrival_time_ns,
+        observations,
     }
-    Ok(())
 }
 
-fn associate(
-    track_ids: &[String],
-    tracks: &BTreeMap<String, ManagedTrack>,
+fn collect_diagnostics(
+    core_batch: &ObservationBatch<Detection, DetectionContext>,
+    result: &BatchResult<PlanarTrackFilter>,
+    diagnostics: &mut TrackerDiagnostics,
+) {
+    let batch_diagnostics = result.diagnostics;
+    diagnostics.candidate_pairs += batch_diagnostics.candidate_pairs;
+    diagnostics.gated_out_pairs += batch_diagnostics.gated_out_pairs;
+    diagnostics.invalid_candidate_pairs += batch_diagnostics.invalid_candidate_pairs;
+    diagnostics.selected_associations += batch_diagnostics.selected_associations;
+    diagnostics.missed_updates += batch_diagnostics.missed_updates;
+    diagnostics.created_tracks += batch_diagnostics.created_tracks;
+    diagnostics.confirmed_tracks += batch_diagnostics.confirmed_tracks;
+    diagnostics.deleted_tracks += batch_diagnostics.deleted_tracks;
+    diagnostics.applied_updates +=
+        batch_diagnostics.selected_associations + batch_diagnostics.created_tracks;
+
+    let selected = selected_observation_ids(&result.association);
+    for observation in &core_batch.observations {
+        if selected.contains(observation.id.as_str()) {
+            match observation.payload {
+                Detection::Camera(_) => diagnostics.associated_camera_detections += 1,
+                Detection::Lidar(_) => diagnostics.associated_lidar_detections += 1,
+            }
+        } else if observation.context.ego_pose.is_some() {
+            match observation.payload {
+                Detection::Camera(_) => {
+                    diagnostics.unmatched_camera_detections += 1;
+                    diagnostics.waiting_for_range += 1;
+                }
+                Detection::Lidar(_) => diagnostics.unmatched_lidar_detections += 1,
+            }
+        }
+    }
+}
+
+fn collect_history(
     batch: &DetectionBatch,
-    egos: &[Option<EgoPose>],
-    gate_sigma: f64,
-    acceleration_noise_stddev_mps2: f64,
-) -> AssociationDecision {
-    if track_ids.is_empty() || batch.detections.is_empty() {
-        return AssociationDecision::default();
-    }
-    let unmatched_cost = gate_sigma.powi(2) + 1.0;
-    let invalid_cost = unmatched_cost * 1.0e6;
-    let mut costs = Vec::with_capacity(track_ids.len());
-    let mut records = Vec::with_capacity(track_ids.len() * batch.detections.len());
-    for track_id in track_ids {
-        let mut row = Vec::with_capacity(batch.detections.len() + track_ids.len());
-        let track = &tracks[track_id];
-        for (index, detection) in batch.detections.iter().enumerate() {
-            let measurement_time_ns = batch.detection_time_ns(detection);
-            let mut predicted = track.filter.clone();
-            let propagated = propagate(
-                &mut predicted,
-                measurement_time_ns,
-                acceleration_noise_stddev_mps2,
-            )
-            .is_ok();
-            let normalized_innovation_squared = propagated
-                .then_some(())
-                .and(egos[index])
-                .and_then(|ego| normalized_innovation_squared(&predicted, detection, ego));
-            let gate_result = match normalized_innovation_squared {
-                Some(value) if value >= 0.0 && value.sqrt() <= gate_sigma => GateResult::Inside,
-                Some(value) if value >= 0.0 => GateResult::Outside,
-                _ => GateResult::Invalid,
-            };
-            row.push(if gate_result == GateResult::Inside {
-                normalized_innovation_squared.expect("inside gate has finite NIS")
-            } else {
-                invalid_cost
-            });
-            records.push(AssociationRecord {
-                batch_id: batch.stable_id.clone(),
-                measurement_time_ns,
-                arrival_time_ns: batch.arrival_time_ns,
-                detection_index: index,
-                detection: detection_record(detection),
-                track_id: track_id.clone(),
-                predicted: propagated.then(|| snapshot(&predicted)),
-                normalized_innovation_squared,
-                gate_threshold_squared: gate_sigma.powi(2),
-                gate_result,
-                selected: false,
-                update_result: None,
-                corrected: None,
-            });
-        }
-        row.extend(std::iter::repeat_n(unmatched_cost, track_ids.len()));
-        costs.push(row);
-    }
-    let matches = math::minimum_cost_assignment(&costs)
-        .into_iter()
+    core_batch: &ObservationBatch<Detection, DetectionContext>,
+    result: &BatchResult<PlanarTrackFilter>,
+    config: &ObjectTrackerConfig,
+    history: &mut TrackerHistory,
+) {
+    let observations = core_batch
+        .observations
+        .iter()
         .enumerate()
-        .filter(|(track_index, detection_index)| {
-            *detection_index < batch.detections.len()
-                && costs[*track_index][*detection_index] < unmatched_cost
-        })
-        .collect::<Vec<_>>();
-    for &(track_index, detection_index) in &matches {
-        let track_id = &track_ids[track_index];
-        records
-            .iter_mut()
-            .find(|record| {
-                record.track_id == *track_id && record.detection_index == detection_index
-            })
-            .expect("assigned candidate was recorded")
-            .selected = true;
-    }
-    AssociationDecision { matches, records }
+        .map(|(index, observation)| (observation.id.as_str(), (index, observation)))
+        .collect::<BTreeMap<_, _>>();
+    let selected = selected_pairs(&result.association);
+    history
+        .associations
+        .extend(result.hypotheses.iter().map(|hypothesis| {
+            let (detection_index, observation) = observations[hypothesis.observation_id.as_str()];
+            let is_selected = selected.contains(&(
+                hypothesis.track_id.as_str(),
+                hypothesis.observation_id.as_str(),
+            ));
+            AssociationRecord {
+                batch_id: batch.stable_id.clone(),
+                measurement_time_ns: observation.measurement_time_ns,
+                arrival_time_ns: batch.arrival_time_ns,
+                detection_index,
+                detection: detection_record(&observation.payload),
+                track_id: hypothesis.track_id.to_string(),
+                predicted: Some(snapshot(&hypothesis.predicted)),
+                normalized_innovation_squared: hypothesis.observation.normalized_innovation_squared,
+                gate_threshold_squared: config.gate_sigma.powi(2),
+                gate_result: match hypothesis.observation.outcome.gate_decision() {
+                    GateDecision::Inside => GateResult::Inside,
+                    GateDecision::Outside => GateResult::Outside,
+                    GateDecision::Invalid => GateResult::Invalid,
+                },
+                selected: is_selected,
+                corrected: is_selected
+                    .then(|| hypothesis.observation.outcome.posterior().map(snapshot))
+                    .flatten(),
+            }
+        }));
+    history
+        .lifecycle
+        .extend(result.lifecycle.iter().map(|event| {
+            let detection = event
+                .observation_id
+                .as_ref()
+                .and_then(|id| observations.get(id.as_str()))
+                .map(|(_, observation)| detection_record(&observation.payload));
+            LifecycleRecord {
+                measurement_time_ns: event.time_ns,
+                arrival_time_ns: batch.arrival_time_ns,
+                sensor: batch.sensor,
+                track_id: event.track_id.to_string(),
+                event: match event.kind {
+                    fusion_tracking::LifecycleEventKind::Created => LifecycleEventKind::Created,
+                    fusion_tracking::LifecycleEventKind::Confirmed => LifecycleEventKind::Confirmed,
+                    fusion_tracking::LifecycleEventKind::Missed => LifecycleEventKind::Missed,
+                    fusion_tracking::LifecycleEventKind::Deleted => LifecycleEventKind::Deleted,
+                },
+                detection,
+                state: snapshot(&event.state),
+            }
+        }));
 }
 
-#[derive(Default)]
-struct AssociationDecision {
-    matches: Vec<(usize, usize)>,
-    records: Vec<AssociationRecord>,
+fn selected_pairs(plan: &AssociationPlan) -> BTreeSet<(&str, &str)> {
+    match plan {
+        AssociationPlan::Hard(assignments) => assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.track_id.as_str(),
+                    assignment.observation_id.as_str(),
+                )
+            })
+            .collect(),
+        AssociationPlan::Marginal(marginals) => marginals
+            .iter()
+            .flat_map(|marginal| {
+                marginal
+                    .observation_probabilities
+                    .iter()
+                    .filter(|(_, probability)| *probability > 0.0)
+                    .map(|(observation_id, _)| {
+                        (marginal.track_id.as_str(), observation_id.as_str())
+                    })
+            })
+            .collect(),
+    }
+}
+
+fn selected_observation_ids(plan: &AssociationPlan) -> BTreeSet<&str> {
+    selected_pairs(plan)
+        .into_iter()
+        .map(|(_, observation_id)| observation_id)
+        .collect()
 }
 
 fn detection_record(detection: &Detection) -> DetectionRecord {
@@ -830,278 +376,7 @@ fn detection_record(detection: &Detection) -> DetectionRecord {
     }
 }
 
-fn normalized_innovation_squared(
-    filter: &Filter,
-    detection: &Detection,
-    ego: EgoPose,
-) -> Option<f64> {
-    match detection {
-        Detection::Camera(value) => {
-            let (residual, jacobian, variance) = camera_innovation(filter, value, ego)?;
-            Some(residual.powi(2) / innovation_variance(filter, jacobian, variance)?)
-        }
-        Detection::Lidar(value) => {
-            let (residual, jacobian, covariance) = lidar_innovation(filter, value, ego)?;
-            let innovation = jacobian * filter.covariance * jacobian.transpose() + covariance;
-            let inverse = innovation.try_inverse()?;
-            let cost = (residual.transpose() * inverse * residual)[0];
-            cost.is_finite().then_some(cost)
-        }
-    }
-}
-
-fn initialize(detection: &LidarDetection, ego: EgoPose, time_ns: i64) -> Filter {
-    let bearing_world = ego.yaw + detection.bearing_rad;
-    let position =
-        ego.position + Vector2::new(bearing_world.cos(), bearing_world.sin()) * detection.range_m;
-    let tangential_variance = detection.range_m.powi(2) * detection.bearing_variance_rad2;
-    let ego_position_variance = ego.covariance_xy_yaw[(0, 0)].max(ego.covariance_xy_yaw[(1, 1)]);
-    let ego_yaw_variance = ego.covariance_xy_yaw[(2, 2)] * detection.range_m.powi(2);
-    let position_variance = detection.range_variance_m2
-        + tangential_variance
-        + ego_position_variance
-        + ego_yaw_variance;
-    let position_x = TrackCoordinate::PositionX.index();
-    let position_y = TrackCoordinate::PositionY.index();
-    let velocity_x = TrackCoordinate::VelocityX.index();
-    let velocity_y = TrackCoordinate::VelocityY.index();
-    Filter {
-        state: TrackState::new(position, Vector2::zeros()),
-        covariance: {
-            let mut covariance = TrackCovariance::zeros();
-            covariance[(position_x, position_x)] = position_variance;
-            covariance[(position_y, position_y)] = position_variance;
-            covariance[(velocity_x, velocity_x)] = 4.0;
-            covariance[(velocity_y, velocity_y)] = 4.0;
-            covariance
-        },
-        time_ns,
-    }
-}
-
-fn propagate(filter: &mut Filter, time_ns: i64, acceleration_noise_stddev_mps2: f64) -> Result<()> {
-    let dt = (time_ns - filter.time_ns) as f64 * 1.0e-9;
-    ensure!(dt >= 0.0, "tracker measurements are not time ordered");
-    if dt == 0.0 {
-        return Ok(());
-    }
-    let mut transition = TrackCovariance::identity();
-    transition[(
-        TrackCoordinate::PositionX.index(),
-        TrackCoordinate::VelocityX.index(),
-    )] = dt;
-    transition[(
-        TrackCoordinate::PositionY.index(),
-        TrackCoordinate::VelocityY.index(),
-    )] = dt;
-    let q = acceleration_noise_stddev_mps2.powi(2);
-    let dt2 = dt * dt;
-    let dt3 = dt2 * dt;
-    let dt4 = dt2 * dt2;
-    let mut process_noise = TrackCovariance::zeros();
-    for (position, velocity) in [
-        (TrackCoordinate::PositionX, TrackCoordinate::VelocityX),
-        (TrackCoordinate::PositionY, TrackCoordinate::VelocityY),
-    ] {
-        process_noise[(position.index(), position.index())] = 0.25 * dt4 * q;
-        process_noise[(position.index(), velocity.index())] = 0.5 * dt3 * q;
-        process_noise[(velocity.index(), position.index())] = 0.5 * dt3 * q;
-        process_noise[(velocity.index(), velocity.index())] = dt2 * q;
-    }
-    filter.state.position_world_m += filter.state.velocity_world_mps * dt;
-    filter.covariance = transition * filter.covariance * transition.transpose() + process_noise;
-    filter.time_ns = time_ns;
-    Ok(())
-}
-
-fn camera_innovation(
-    filter: &Filter,
-    detection: &CameraDetection,
-    ego: EgoPose,
-) -> Option<(f64, TrackVector, f64)> {
-    let displacement = filter.state.position_world_m - ego.position;
-    let range_squared = displacement.norm_squared();
-    if range_squared <= 1.0e-12 {
-        return None;
-    }
-    let predicted = math::wrap_angle(displacement.y.atan2(displacement.x) - ego.yaw);
-    let mut jacobian = TrackVector::zeros();
-    jacobian[TrackCoordinate::PositionX.index()] = -displacement.y / range_squared;
-    jacobian[TrackCoordinate::PositionY.index()] = displacement.x / range_squared;
-    let ego_jacobian = SVector::<f64, 3>::new(
-        displacement.y / range_squared,
-        -displacement.x / range_squared,
-        -1.0,
-    );
-    let ego_variance = (ego_jacobian.transpose() * ego.covariance_xy_yaw * ego_jacobian)[0];
-    Some((
-        math::wrap_angle(detection.bearing_rad - predicted),
-        jacobian,
-        detection.bearing_variance_rad2 + ego_variance.max(0.0),
-    ))
-}
-
-fn lidar_innovation(
-    filter: &Filter,
-    detection: &LidarDetection,
-    ego: EgoPose,
-) -> Option<(Vector2<f64>, LidarJacobian, LidarCovariance)> {
-    let displacement = filter.state.position_world_m - ego.position;
-    let range_squared = displacement.norm_squared();
-    let range = range_squared.sqrt();
-    if range <= 1.0e-9 {
-        return None;
-    }
-    let predicted_bearing = math::wrap_angle(displacement.y.atan2(displacement.x) - ego.yaw);
-    let residual = Vector2::new(
-        detection.range_m - range,
-        math::wrap_angle(detection.bearing_rad - predicted_bearing),
-    );
-    let mut jacobian = LidarJacobian::zeros();
-    jacobian[(0, TrackCoordinate::PositionX.index())] = displacement.x / range;
-    jacobian[(0, TrackCoordinate::PositionY.index())] = displacement.y / range;
-    jacobian[(1, TrackCoordinate::PositionX.index())] = -displacement.y / range_squared;
-    jacobian[(1, TrackCoordinate::PositionY.index())] = displacement.x / range_squared;
-    let ego_jacobian = SMatrix::<f64, 2, 3>::from_row_slice(&[
-        -displacement.x / range,
-        -displacement.y / range,
-        0.0,
-        displacement.y / range_squared,
-        -displacement.x / range_squared,
-        -1.0,
-    ]);
-    let sensor_covariance = LidarCovariance::from_diagonal(&Vector2::new(
-        detection.range_variance_m2,
-        detection.bearing_variance_rad2,
-    ));
-    let covariance =
-        sensor_covariance + ego_jacobian * ego.covariance_xy_yaw * ego_jacobian.transpose();
-    Some((residual, jacobian, covariance))
-}
-
-fn innovation_variance(
-    filter: &Filter,
-    jacobian: TrackVector,
-    measurement_variance: f64,
-) -> Option<f64> {
-    if !measurement_variance.is_finite() || measurement_variance < 0.0 {
-        return None;
-    }
-    let variance = (jacobian.transpose() * filter.covariance * jacobian)[0] + measurement_variance;
-    (variance.is_finite() && variance > 1.0e-15).then_some(variance)
-}
-
-fn update_camera(
-    filter: &mut Filter,
-    detection: &CameraDetection,
-    ego: EgoPose,
-    gate_sigma: f64,
-) -> UpdateResult {
-    let Some((residual, jacobian, measurement_variance)) =
-        camera_innovation(filter, detection, ego)
-    else {
-        return UpdateResult::Invalid;
-    };
-    apply_track_scalar(filter, residual, jacobian, measurement_variance, gate_sigma)
-}
-
-fn update_lidar(
-    filter: &mut Filter,
-    detection: &LidarDetection,
-    ego: EgoPose,
-    gate_sigma: f64,
-) -> UpdateResult {
-    let Some((residual, jacobian, measurement_covariance)) =
-        lidar_innovation(filter, detection, ego)
-    else {
-        return UpdateResult::Invalid;
-    };
-    if !residual.iter().all(|value| value.is_finite())
-        || !measurement_covariance.iter().all(|value| value.is_finite())
-    {
-        return UpdateResult::Invalid;
-    }
-    let innovation = jacobian * filter.covariance * jacobian.transpose() + measurement_covariance;
-    let Some(inverse) = innovation.try_inverse() else {
-        return UpdateResult::Invalid;
-    };
-    let normalized_squared = (residual.transpose() * inverse * residual)[0];
-    if !normalized_squared.is_finite() {
-        return UpdateResult::Invalid;
-    }
-    if normalized_squared.sqrt() > gate_sigma {
-        return UpdateResult::Rejected;
-    }
-    let gain = filter.covariance * jacobian.transpose() * inverse;
-    let state = filter.state.with_correction(gain * residual);
-    let left = TrackCovariance::identity() - gain * jacobian;
-    let covariance = left * filter.covariance * left.transpose()
-        + gain * measurement_covariance * gain.transpose();
-    commit_update(filter, state, covariance)
-}
-
-fn apply_track_scalar(
-    filter: &mut Filter,
-    residual: f64,
-    jacobian: TrackVector,
-    measurement_variance: f64,
-    gate_sigma: f64,
-) -> UpdateResult {
-    if !residual.is_finite() {
-        return UpdateResult::Invalid;
-    }
-    let Some(variance) = innovation_variance(filter, jacobian, measurement_variance) else {
-        return UpdateResult::Invalid;
-    };
-    if residual.abs() / variance.sqrt() > gate_sigma {
-        return UpdateResult::Rejected;
-    }
-    let gain = filter.covariance * jacobian / variance;
-    let state = filter.state.with_correction(gain * residual);
-    let left = TrackCovariance::identity() - gain * jacobian.transpose();
-    let covariance = left * filter.covariance * left.transpose()
-        + gain * measurement_variance * gain.transpose();
-    commit_update(filter, state, covariance)
-}
-
-fn commit_update(
-    filter: &mut Filter,
-    state: TrackState,
-    covariance: TrackCovariance,
-) -> UpdateResult {
-    let covariance = 0.5 * (covariance + covariance.transpose());
-    if !state.position_world_m.iter().all(|value| value.is_finite())
-        || !state
-            .velocity_world_mps
-            .iter()
-            .all(|value| value.is_finite())
-        || !covariance.iter().all(|value| value.is_finite())
-        || covariance.clone_owned().cholesky().is_none()
-    {
-        return UpdateResult::Invalid;
-    }
-    filter.state = state;
-    filter.covariance = covariance;
-    UpdateResult::Applied
-}
-
-fn snapshot(filter: &Filter) -> TrackSnapshot {
-    TrackSnapshot {
-        position_world_m: [
-            filter.state.position_world_m.x,
-            filter.state.position_world_m.y,
-        ],
-        velocity_world_mps: [
-            filter.state.velocity_world_mps.x,
-            filter.state.velocity_world_mps.y,
-        ],
-        state_covariance: (0..4)
-            .flat_map(|row| (0..4).map(move |column| filter.covariance[(row, column)]))
-            .collect(),
-    }
-}
-
-fn to_track(filter: &Filter, track_id: &str) -> ObjectTrack {
+fn to_track(filter: &PlanarTrackFilter, track_id: &str) -> ObjectTrack {
     ObjectTrack {
         track_id: track_id.to_owned(),
         position_world_m: Some(Vec2 {
@@ -1113,14 +388,21 @@ fn to_track(filter: &Filter, track_id: &str) -> ObjectTrack {
             y: filter.state.velocity_world_mps.y,
         }),
         state_covariance: (0..4)
-            .flat_map(|row| (0..4).map(move |column| filter.covariance[(row, column)]))
+            .flat_map(|row| (0..4).map(move |column| filter.state_covariance[(row, column)]))
             .collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use fusion_schema::messages::{
+        CameraDetection, CameraFrame, LidarDetection, LidarScan, MeasurementTime,
+    };
+    use nalgebra::{SMatrix, Vector2};
+
     use super::*;
+    use input::EgoPose;
+    use planar_model::{UpdateResult, initialize, update_lidar};
 
     fn detection(range_m: f64, bearing_rad: f64, time_ns: i64) -> LidarDetection {
         LidarDetection {
@@ -1135,10 +417,27 @@ mod tests {
     fn ego() -> EgoPose {
         EgoPose {
             time_ns: 0,
-            position: Vector2::zeros(),
-            yaw: 0.0,
-            covariance_xy_yaw: SMatrix::zeros(),
+            position_world_m: Vector2::zeros(),
+            yaw_world_from_body_rad: 0.0,
+            pose_covariance_world: SMatrix::zeros(),
         }
+    }
+
+    fn time(time_ns: i64) -> MeasurementTime {
+        MeasurementTime {
+            measurement_time_ns: time_ns,
+            arrival_time_ns: time_ns,
+        }
+    }
+
+    fn history(end_time_ns: i64) -> EgoHistory {
+        EgoHistory::from_samples(vec![
+            ego(),
+            EgoPose {
+                time_ns: end_time_ns,
+                ..ego()
+            },
+        ])
     }
 
     #[test]
@@ -1147,7 +446,7 @@ mod tests {
         let wrong = initialize(
             &detection(20.0, 0.0, 0),
             EgoPose {
-                yaw: 1_f64.to_radians(),
+                yaw_world_from_body_rad: 1_f64.to_radians(),
                 ..ego()
             },
             0,
@@ -1163,23 +462,18 @@ mod tests {
         let ego = ego();
         let mut filter = initialize(&detection(20.0, 0.0, 0), ego, 0);
         let original_state = filter.state;
-        let original_covariance = filter.covariance;
+        let original_state_covariance = filter.state_covariance;
         let outlier = detection(20.0, std::f64::consts::FRAC_PI_2, 0);
-
         assert_eq!(
             update_lidar(&mut filter, &outlier, ego, 3.0),
             UpdateResult::Rejected
         );
         assert_eq!(filter.state, original_state);
-        assert_eq!(filter.covariance, original_covariance);
+        assert_eq!(filter.state_covariance, original_state_covariance);
     }
 
     #[test]
     fn association_follows_position_instead_of_detection_order() -> Result<()> {
-        let time = |time_ns| MeasurementTime {
-            measurement_time_ns: time_ns,
-            arrival_time_ns: time_ns,
-        };
         let measurements = vec![
             PerceptionMeasurement::Lidar(LidarScan {
                 time: Some(time(0)),
@@ -1193,16 +487,11 @@ mod tests {
                 ],
             }),
         ];
-        let history = EgoHistory {
-            samples: vec![
-                ego(),
-                EgoPose {
-                    time_ns: 1_000_000_000,
-                    ..ego()
-                },
-            ],
-        };
-        let result = run(&ObjectTrackerConfig::default(), &measurements, &history)?;
+        let result = run(
+            &ObjectTrackerConfig::default(),
+            &measurements,
+            &history(1_000_000_000),
+        )?;
         let tracks = &result.frames.last().unwrap().tracks;
         let first = tracks
             .iter()
@@ -1221,10 +510,6 @@ mod tests {
 
     #[test]
     fn history_records_prediction_gate_and_correction() -> Result<()> {
-        let time = |time_ns| MeasurementTime {
-            measurement_time_ns: time_ns,
-            arrival_time_ns: time_ns,
-        };
         let measurements = vec![
             PerceptionMeasurement::Lidar(LidarScan {
                 time: Some(time(0)),
@@ -1235,27 +520,17 @@ mod tests {
                 detections: vec![detection(5.5, 0.0, 1_000_000_000)],
             }),
         ];
-        let history = EgoHistory {
-            samples: vec![
-                ego(),
-                EgoPose {
-                    time_ns: 1_000_000_000,
-                    ..ego()
-                },
-            ],
-        };
         let result = run(
             &ObjectTrackerConfig {
                 confirmation_hits: 1,
                 ..ObjectTrackerConfig::default()
             },
             &measurements,
-            &history,
+            &history(1_000_000_000),
         )?;
         let association = result.history.associations.last().unwrap();
         assert_eq!(association.gate_result, GateResult::Inside);
         assert!(association.selected);
-        assert_eq!(association.update_result, Some(UpdateResult::Applied));
         assert!(
             association
                 .normalized_innovation_squared
@@ -1269,10 +544,6 @@ mod tests {
 
     #[test]
     fn history_records_a_gated_candidate_and_missed_update() -> Result<()> {
-        let time = |time_ns| MeasurementTime {
-            measurement_time_ns: time_ns,
-            arrival_time_ns: time_ns,
-        };
         let measurements = vec![
             PerceptionMeasurement::Lidar(LidarScan {
                 time: Some(time(0)),
@@ -1283,15 +554,6 @@ mod tests {
                 detections: vec![detection(5.0, std::f64::consts::FRAC_PI_2, 1_000_000_000)],
             }),
         ];
-        let history = EgoHistory {
-            samples: vec![
-                ego(),
-                EgoPose {
-                    time_ns: 1_000_000_000,
-                    ..ego()
-                },
-            ],
-        };
         let result = run(
             &ObjectTrackerConfig {
                 confirmation_hits: 1,
@@ -1300,7 +562,7 @@ mod tests {
                 ..ObjectTrackerConfig::default()
             },
             &measurements,
-            &history,
+            &history(1_000_000_000),
         )?;
         let candidate = result.history.associations.first().unwrap();
         assert_eq!(candidate.gate_result, GateResult::Outside);
@@ -1314,10 +576,6 @@ mod tests {
 
     #[test]
     fn camera_update_refreshes_track_lifetime() -> Result<()> {
-        let time = |time_ns| MeasurementTime {
-            measurement_time_ns: time_ns,
-            arrival_time_ns: time_ns,
-        };
         let measurements = vec![
             PerceptionMeasurement::Lidar(LidarScan {
                 time: Some(time(0)),
@@ -1339,15 +597,6 @@ mod tests {
                 detections: Vec::new(),
             }),
         ];
-        let history = EgoHistory {
-            samples: vec![
-                ego(),
-                EgoPose {
-                    time_ns: 2_500_000_000,
-                    ..ego()
-                },
-            ],
-        };
         let result = run(
             &ObjectTrackerConfig {
                 confirmation_hits: 1,
@@ -1355,7 +604,7 @@ mod tests {
                 ..ObjectTrackerConfig::default()
             },
             &measurements,
-            &history,
+            &history(2_500_000_000),
         )?;
         assert_eq!(result.frames[2].tracks.len(), 1);
         assert!(result.frames[3].tracks.is_empty());
@@ -1365,10 +614,6 @@ mod tests {
 
     #[test]
     fn track_is_deleted_after_configured_time_without_an_update() -> Result<()> {
-        let time = |time_ns| MeasurementTime {
-            measurement_time_ns: time_ns,
-            arrival_time_ns: time_ns,
-        };
         let measurements = vec![
             PerceptionMeasurement::Lidar(LidarScan {
                 time: Some(time(0)),
@@ -1383,25 +628,29 @@ mod tests {
                 detections: Vec::new(),
             }),
         ];
-        let history = EgoHistory {
-            samples: vec![
-                ego(),
-                EgoPose {
-                    time_ns: 2_000_000_000,
-                    ..ego()
-                },
-            ],
-        };
-        let config = ObjectTrackerConfig {
-            confirmation_hits: 1,
-            max_time_without_update_s: 2.0,
-            ..ObjectTrackerConfig::default()
-        };
-        let result = run(&config, &measurements, &history)?;
+        let result = run(
+            &ObjectTrackerConfig {
+                confirmation_hits: 1,
+                max_time_without_update_s: 2.0,
+                ..ObjectTrackerConfig::default()
+            },
+            &measurements,
+            &history(2_000_000_000),
+        )?;
         assert_eq!(result.diagnostics.created_tracks, 1);
         assert_eq!(result.diagnostics.confirmed_tracks, 1);
         assert_eq!(result.diagnostics.deleted_tracks, 1);
         assert!(result.frames.last().unwrap().tracks.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn missing_perception_time_is_an_input_error() {
+        let measurements = vec![PerceptionMeasurement::Camera(CameraFrame {
+            time: None,
+            detections: Vec::new(),
+        })];
+        let error = run(&ObjectTrackerConfig::default(), &measurements, &history(0)).unwrap_err();
+        assert_eq!(error.to_string(), "perception measurement has no time");
     }
 }

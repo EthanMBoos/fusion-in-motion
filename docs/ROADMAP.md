@@ -1,7 +1,7 @@
 # Roadmap
 
-Build a fast Rust simulator for 2D and 3D state-estimation and tracking
-experiments. Run simulated or recorded data and inspect the results in Rerun.
+Build a fast Rust engine for state-estimation and tracking experiments. Run
+simulated or recorded data and inspect the included planar reference in Rerun.
 The goal is a Rust sister project to
 [Stone Soup](https://github.com/dstl/Stone-Soup).
 
@@ -19,19 +19,19 @@ point-cloud decoding, model inference, and calibration. Rust receives the
 observations. Report fixed-detection tracking separately from the full
 detector-to-track result.
 
-## 2. Add 3D
+## 2. Harden the reusable tracking engine
 
-Leave the planar API small. Add separate 3D types for pose, motion,
-observations, and covariance.
+Keep schemas, sensor names, coordinate systems, and visualization out of
+`fusion-tracking`. Test the interfaces through the planar implementation. Put
+large custom scenarios, sensor configurations, and their models in their own
+repositories.
 
-- Define and test the coordinates and camera geometry.
-- Add a small 3D truth path and camera observations.
-- Add 3D scoring and a Rerun view.
-- Build the first 3D lesson.
-
-Start with a drone and camera. State whether the demo estimates the drone, an
-object, or both. A monocular camera does not provide absolute distance from one
-image. Get scale from motion, known geometry, altitude, or a prior.
+- Document the observation, hypothesis, association, reduction, initiation,
+  and lifecycle interfaces with one small downstream example.
+- Add public API tests for alternative caller-owned state and observation
+  types without adding another built-in domain.
+- Stabilize diagnostics and history ordering needed for reproducible studies.
+- Publish reviewed revisions that downstream repositories can pin.
 
 ## 3. Finish evaluation and benchmarks
 
@@ -47,5 +47,5 @@ large sizes. Report update time, full-run time, events per second, and peak
 memory. Measure Rerun recording separately.
 
 Measurement-file replay and tracking measures come next. Add recorded
-benchmarks after those work. Start 3D once the run and result formats are
-stable.
+benchmarks after those work. Expand domain-specific models in downstream
+repositories once the run and result formats are stable.
